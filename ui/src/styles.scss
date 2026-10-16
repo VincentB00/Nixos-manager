@@ -1,0 +1,49 @@
+@use '@angular/material' as mat;
+@use '@xterm/xterm/css/xterm.css';
+
+html {
+  @include mat.theme((
+    color: (
+      primary: mat.$azure-palette,
+      tertiary: mat.$cyan-palette,
+      theme-type: light,
+    ),
+    typography: Roboto,
+    density: 0,
+  ));
+  color-scheme: light dark;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    @include mat.theme((
+      color: (
+        primary: mat.$azure-palette,
+        tertiary: mat.$cyan-palette,
+        theme-type: dark,
+      ),
+    ));
+  }
+}
+
+html, body { height: 100%; margin: 0; }
+body { font-family: Roboto, "Helvetica Neue", sans-serif; }
+
+code, .mono { font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+
+.muted { color: var(--mat-sys-on-surface-variant); }
+html { --nm-warning: #8a6d00; --nm-warning-bg: rgba(255, 193, 7, .16); --nm-warning-border: #e0a800; }
+@media (prefers-color-scheme: dark) { html { --nm-warning: #ffd54f; --nm-warning-bg: rgba(255, 213, 79, .14); --nm-warning-border: #ffca28; } }
+.error-text { color: var(--mat-sys-error); }
+.warning-text { color: var(--nm-warning); }
+/* Non-blocking condition that deserves attention (amber); errors stay red. */
+.warning-box { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: 8px; background: var(--nm-warning-bg); border-left: 4px solid var(--nm-warning-border); color: inherit; margin-bottom: 12px; font-size: .9em; }
+.warning-box mat-icon { color: var(--nm-warning); flex: none; }
+.tag.warning { color: var(--nm-warning); border-color: var(--nm-warning-border); }
+.error-box { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent); border-left: 4px solid var(--mat-sys-error); color: inherit; margin-bottom: 12px; font-size: .9em; }
+.error-box mat-icon { color: var(--mat-sys-error); flex: none; }
+.flex { display: flex; align-items: center; gap: 8px; }
+.spacer { flex: 1 1 auto; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 4px; }

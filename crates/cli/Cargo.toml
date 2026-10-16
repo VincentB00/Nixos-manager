@@ -1,0 +1,17 @@
+[package]
+name = "nixos-manager-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface over the Nixos-manager core"
+
+[[bin]]
+name = "nixos-manager"
+path = "src/main.rs"
+
+[dependencies]
+nixos-manager-core = { path = "../core" }
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }

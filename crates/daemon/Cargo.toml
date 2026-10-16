@@ -1,0 +1,27 @@
+[package]
+name = "nixos-manager-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP/WebSocket daemon serving the Nixos-manager UI and API"
+
+[[bin]]
+name = "nixos-manager-daemon"
+path = "src/main.rs"
+
+[dependencies]
+nixos-manager-core = { path = "../core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+rust-embed = { version = "8", features = ["include-exclude"] }
+mime_guess = "2"
+futures = "0.3"
+clap = { version = "4", features = ["derive", "env"] }
+similar = "2"

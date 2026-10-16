@@ -1,0 +1,82 @@
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { ApiService, ApiFailure } from '../api/api.service';
+import type { ConfigOverview, FileSummary, FlakeVar, PackageSet } from '../api/generated';
+
+/** The currently opened configuration folder and its discovery result. */
+@Injectable({ providedIn: 'root' })
+export class WorkspaceService {
+  private api = inject(ApiService);
+  private snack = inject(MatSnackBar);
+
+  readonly path = signal<string | null>(null);
+  readonly overview = signal<ConfigOverview | null>(null);
+  readonly loading = signal(false);
+  readonly error = signal<string | null>(null);
+  readonly selectedHost = signal<string | null>(null);
+  /** Package sets modules can draw from (pkgs, pkgs-<channel>, ...). */
+  /** Global values from flake.nix (`vars = { ... }`), empty for classic configs. */
+  readonly flakeVars = signal<FlakeVar[]>([]);
+  readonly packageSets = signal<PackageSet[]>([{ name: 'pkgs', label: 'main', input: null, flake_ref: null, is_default: true, bits32: false }]);
+
+  readonly nixFiles = computed(() => (this.overview()?.files ?? []).filter(f => f.rel_path.endsWith('.nix')));
+  readonly otherFiles = computed(() => (this.overview()?.files ?? []).filter(f => !f.rel_path.endsWith('.nix')));
+  readonly fileMap = computed(() => {
+    const m = new Map<string, FileSummary>();
+    for (const f of this.overview()?.files ?? []) m.set(f.rel_path, f);
+    return m;
+  });
+
+  open(path: string) {
+    const isNew = this.path() !== path;
+    if (isNew) {
+      this.path.set(path);
+      this.overview.set(null);
+    }
+    // hardware-configuration.nix: this machine's /etc/nixos copy is the source
+    // of truth and is copied into the folder on open (users rarely edit it).
+    this.api.hardwareSync(path).subscribe({
+      next: r => {
+        if (r.status === 'copied' || r.status === 'refreshed') {
+          this.snack.open(r.message, 'OK', { duration: 8000 });
+          this.reload();
+        } else if (r.status === 'not-writable') {
+          this.snack.open(r.message, 'OK', { duration: 8000 });
+        }
+      },
+      error: () => {},
+    });
+    this.reload();
+  }
+
+  reload() {
+    const path = this.path();
+    if (!path) return;
+    this.loading.set(true);
+    this.error.set(null);
+    this.api.packageSets(path).subscribe({ next: sets => this.packageSets.set(sets), error: () => {} });
+    this.api.flakeInfo(path).subscribe({ next: f => this.flakeVars.set(f.vars ?? []), error: () => this.flakeVars.set([]) });
+    this.api.overview(path).subscribe({
+      next: ov => {
+        this.overview.set(ov);
+        this.loading.set(false);
+        const hosts = ov.location.hosts;
+        const current = this.selectedHost();
+        if (!current || !hosts.includes(current)) {
+          const machineHost = ov.machine.hostname;
+          this.selectedHost.set(hosts.find(h => h === machineHost) ?? hosts[0] ?? null);
+        }
+      },
+      error: (e: ApiFailure) => {
+        this.error.set(e.message);
+        this.loading.set(false);
+      },
+    });
+  }
+
+  close() {
+    this.path.set(null);
+    this.overview.set(null);
+    this.selectedHost.set(null);
+  }
+}

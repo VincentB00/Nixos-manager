@@ -1,0 +1,7 @@
+/target
+/result
+/ui/node_modules
+/ui/dist
+/ui/.angular
+*.log
+.DS_Store
