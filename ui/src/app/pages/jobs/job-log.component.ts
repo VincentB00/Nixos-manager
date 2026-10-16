@@ -1,5 +1,8 @@
-import { AfterViewInit, Component, ElementRef, OnDestroy, computed, effect, inject, input, viewChild } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, OnDestroy, computed, effect, inject, input, signal, viewChild } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
+import { MatDialog } from '@angular/material/dialog';
+import { ApiService, ApiFailure } from '../../api/api.service';
+import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatButtonModule } from '@angular/material/button';
 import { RouterLink } from '@angular/router';
@@ -24,6 +27,11 @@ import type { LogLine } from '../../api/generated';
       <h2 style="margin:0">{{ job()?.info.title ?? 'Job' }}</h2>
       <span [class]="'status ' + (job()?.info.status ?? '')">{{ job()?.info.status }}</span>
       @if (job()?.info.error) { <span class="error-text">{{ job()?.info.error }}</span> }
+      @if (job()?.info.log_file; as f) { <span class="muted" style="font-size:.8em" [title]="f">log saved on disk</span> }
+      <span class="spacer"></span>
+      @if (job()?.info.status === 'running' || job()?.info.status === 'pending') {
+        <button mat-stroked-button color="warn" (click)="stop()" [disabled]="stopping()"><mat-icon>stop_circle</mat-icon> {{ stopping() ? 'Stopping…' : 'Stop' }}</button>
+      }
     </div>
     @if (job()?.info.status === 'running' || job()?.info.status === 'pending') { <mat-progress-bar mode="indeterminate" /> }
     <div #term class="term"></div>
@@ -32,6 +40,22 @@ import type { LogLine } from '../../api/generated';
 export class JobLogComponent implements AfterViewInit, OnDestroy {
   id = input.required<string>();
   private jobs = inject(JobsService);
+  private api = inject(ApiService);
+  private dialog = inject(MatDialog);
+  stopping = signal(false);
+
+  stop() {
+    const kind = this.job()?.info.kind ?? '';
+    const msg = kind === 'deploy'
+      ? 'Stopping while the system is being evaluated or built is safe: nothing has been applied yet. Stopping during activation (the "switching" lines near the end) can leave the machine half-switched until the next build. Temporary trust granted on a target is still removed.'
+      : 'The running command and everything it started are terminated.';
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '520px', data: { title: 'Stop this job?', message: msg, okLabel: 'Stop', danger: true } })
+      .afterClosed().subscribe(r => {
+        if (!r) return;
+        this.stopping.set(true);
+        this.api.stopJob(this.id()).subscribe({ next: () => {}, error: (e: ApiFailure) => { this.stopping.set(false); this.terminal?.writeln(`\x1b[31m${e.message}\x1b[0m`); } });
+      });
+  }
   private termEl = viewChild.required<ElementRef<HTMLDivElement>>('term');
   private terminal?: Terminal;
   private fit?: FitAddon;

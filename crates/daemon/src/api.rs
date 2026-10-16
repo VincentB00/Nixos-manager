@@ -47,6 +47,17 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
         .route("/fs/suggestions", get(fs_suggestions))
         .route("/location/open", post(open_location))
         .route("/location/hardware-sync", post(hardware_sync))
+        .route("/git/info", get(git_info))
+        .route("/git/branches", get(git_branches))
+        .route("/git/diff", get(git_diff))
+        .route("/git/suggest", get(git_suggest))
+        .route("/git/switch", post(git_switch))
+        .route("/git/branch", post(git_branch))
+        .route("/git/commit", post(git_commit))
+        .route("/git/push", post(git_push))
+        .route("/git/fetch", post(git_fetch))
+        .route("/git/pull", post(git_pull))
+        .route("/git/identity", post(git_identity))
         .route("/remote/pull-hardware", post(hardware_pull))
         .route("/config/overview", get(config_overview))
         .route("/config/file", get(config_file))
@@ -93,6 +104,9 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
         .route("/remote/setup-key", post(remote_setup_key))
         .route("/jobs", get(jobs_list))
         .route("/jobs/{id}", get(jobs_get))
+        .route("/jobs/{id}/stop", post(jobs_stop))
+        .route("/jobs/history", get(jobs_history).delete(jobs_history_clear))
+        .route("/jobs/history/{name}", get(jobs_history_read).delete(jobs_history_delete))
         .route("/ws", get(ws_handler))
         .with_state(ctx);
 
@@ -149,7 +163,9 @@ async fn fs_suggestions() -> ApiResult<Vec<LocationSuggestion>> {
 async fn hardware_sync(State(ctx): State<AppCtx>, Json(body): Json<PathBody>) -> ApiResult<HardwareSync> {
     let path = fsbrowse::normalize_input(&body.path);
     let pull = ctx.store.get().await.hardware_pulls.get(&path.to_string_lossy().to_string()).cloned();
-    Ok(Json(nixos_manager_core::hardware::sync_from_system(&path, pull.as_ref())))
+    let mut r = nixos_manager_core::hardware::sync_from_system(&path, pull.as_ref());
+    r.lock_removed = nixos_manager_core::flake::remove_workspace_lock(&path);
+    Ok(Json(r))
 }
 
 /// Copy a deploy target's /etc/nixos/hardware-configuration.nix over the
@@ -161,6 +177,56 @@ async fn hardware_pull(State(ctx): State<AppCtx>, Json(req): Json<HardwarePullRe
     let (rel, pull) = nixos_manager_core::hardware::install_pulled(&path, &target.name, &text).map_err(|e| CoreError::Invalid(format!("cannot write the file: {e}")))?;
     ctx.store.set_hardware_pull(&path.to_string_lossy(), pull).await?;
     Ok(Json(HardwarePullResult { target: target.name, source, rel_path: rel.to_string_lossy().to_string(), bytes: text.len() as u64 }))
+}
+
+// ───────────────────────── git ─────────────────────────
+
+async fn git_info(Query(q): Query<ConfigQuery>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::info(&root_of(&q.path)).await?))
+}
+async fn git_branches(Query(q): Query<ConfigQuery>) -> ApiResult<Vec<GitBranch>> {
+    Ok(Json(nixos_manager_core::git::branches(&root_of(&q.path)).await?))
+}
+async fn git_diff(Query(q): Query<ConfigQuery>) -> ApiResult<String> {
+    let file = q.file.ok_or_else(|| CoreError::Invalid("file is required".into()))?;
+    Ok(Json(nixos_manager_core::git::diff(&root_of(&q.path), &file).await?))
+}
+async fn git_suggest(Query(q): Query<ConfigQuery>) -> ApiResult<GitSuggestion> {
+    Ok(Json(nixos_manager_core::git::suggest_message(&root_of(&q.path)).await?))
+}
+async fn git_switch(Json(r): Json<GitBranchRequest>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::switch(&root_of(&r.path), &r.name).await?))
+}
+async fn git_branch(Json(r): Json<GitBranchRequest>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::create_branch(&root_of(&r.path), &r.name).await?))
+}
+async fn git_commit(Json(r): Json<GitCommitRequest>) -> ApiResult<GitNetResult> {
+    let root = root_of(&r.path);
+    let info = nixos_manager_core::git::commit(&root, &r.message, r.paths.as_deref()).await?;
+    if r.push {
+        let output = nixos_manager_core::git::push(&root, r.password.as_deref()).await?;
+        let info = nixos_manager_core::git::info(&root).await?;
+        return Ok(Json(GitNetResult { output, info }));
+    }
+    Ok(Json(GitNetResult { output: String::new(), info }))
+}
+async fn git_push(Json(r): Json<GitNetRequest>) -> ApiResult<GitNetResult> {
+    let root = root_of(&r.path);
+    let output = nixos_manager_core::git::push(&root, r.password.as_deref()).await?;
+    Ok(Json(GitNetResult { output, info: nixos_manager_core::git::info(&root).await? }))
+}
+async fn git_fetch(Json(r): Json<GitNetRequest>) -> ApiResult<GitNetResult> {
+    let root = root_of(&r.path);
+    let output = nixos_manager_core::git::fetch(&root, r.password.as_deref()).await?;
+    Ok(Json(GitNetResult { output, info: nixos_manager_core::git::info(&root).await? }))
+}
+async fn git_pull(Json(r): Json<GitNetRequest>) -> ApiResult<GitNetResult> {
+    let root = root_of(&r.path);
+    let output = nixos_manager_core::git::pull(&root, r.password.as_deref()).await?;
+    Ok(Json(GitNetResult { output, info: nixos_manager_core::git::info(&root).await? }))
+}
+async fn git_identity(Json(r): Json<GitIdentityRequest>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::set_identity(&root_of(&r.path), &r.name, &r.email).await?))
 }
 
 async fn open_location(State(ctx): State<AppCtx>, Json(body): Json<PathBody>) -> ApiResult<LocationInfo> {
@@ -483,6 +549,25 @@ async fn validate_start(State(ctx): State<AppCtx>, Json(req): Json<ValidateReque
 
 async fn jobs_list(State(ctx): State<AppCtx>) -> ApiResult<Vec<JobInfo>> {
     Ok(Json(ctx.jobs.list().await))
+}
+
+async fn jobs_history() -> ApiResult<Vec<JobLogFile>> {
+    Ok(Json(nixos_manager_core::jobs::JobManager::history()))
+}
+async fn jobs_history_clear(State(ctx): State<AppCtx>) -> ApiResult<serde_json::Value> {
+    let (deleted, bytes) = ctx.jobs.history_clear().await;
+    Ok(Json(serde_json::json!({ "deleted": deleted, "bytes": bytes })))
+}
+async fn jobs_history_delete(State(ctx): State<AppCtx>, AxPath(name): AxPath<String>) -> ApiResult<serde_json::Value> {
+    ctx.jobs.history_delete(&name).await?;
+    Ok(Json(serde_json::json!({ "deleted": 1 })))
+}
+async fn jobs_history_read(AxPath(name): AxPath<String>) -> ApiResult<String> {
+    Ok(Json(nixos_manager_core::jobs::JobManager::history_read(&name)?))
+}
+
+async fn jobs_stop(State(ctx): State<AppCtx>, AxPath(id): AxPath<String>) -> ApiResult<JobInfo> {
+    Ok(Json(ctx.jobs.stop(&id).await?))
 }
 
 async fn jobs_get(State(ctx): State<AppCtx>, AxPath(id): AxPath<String>) -> ApiResult<JobDetail> {

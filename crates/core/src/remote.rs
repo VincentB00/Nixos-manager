@@ -27,7 +27,7 @@ fn action_arg(a: RebuildAction) -> &'static str {
 /// the working folder: a `path:` flake reference sees every file in it,
 /// whereas a git checkout would hide untracked files such as a gitignored
 /// hardware-configuration.nix.
-pub fn remote_script(req: &DeployRequest, target: &DeployTarget, staged: &Path, kind: ConfigKind, sudo_flag: &str) -> String {
+pub fn remote_script(req: &DeployRequest, target: &DeployTarget, staged: &Path, kind: ConfigKind, sudo_flag: &str, stop_file: &Path) -> String {
     let wd = sh(&staged.to_string_lossy());
     let action = action_arg(req.action);
     let mut s = String::new();
@@ -44,6 +44,7 @@ pub fn remote_script(req: &DeployRequest, target: &DeployTarget, staged: &Path, 
     if needs_trust_step {
         s.push_str(&trust_snippet(target, true));
     }
+    s.push_str(&crate::deploy::after_prelude(req.after, req.after_even_on_failure, None, &remote_after_body(target, req.after)));
     let mut cmd = format!("nixos-rebuild {action}");
     match kind {
         ConfigKind::Flake => {
@@ -74,23 +75,28 @@ pub fn remote_script(req: &DeployRequest, target: &DeployTarget, staged: &Path, 
     // daemon started from a terminal by run.sh passes one down) and only
     // falls back to stdin without one. setsid detaches the terminal so the
     // piped password is what gets read.
+    // The rebuild runs through `stoppable` (own session, polled stop file).
+    // A new session has no controlling terminal, so with a target sudo
+    // password nixos-rebuild's getpass reads it from stdin.
+    let with_pw = format!("printf '%s\\n' \"$NM_TARGET_PW\" | {cmd} --ask-sudo-password 2>&1");
+    let without = if target.use_remote_sudo { format!("{cmd} {sudo_flag} 2>&1") } else { format!("{cmd} 2>&1") };
     let run_line = if target.use_remote_sudo {
         format!(
-            "if [ -n \"${{NM_TARGET_PW:-}}\" ]; then if command -v setsid >/dev/null 2>&1; then NM_NOTTY=\"setsid -w\"; else NM_NOTTY=\"\"; echo \"[nixos-manager] WARNING: setsid not found; if this machine has a terminal the sudo password prompt may appear there instead of reading the supplied one\"; fi; echo \"[nixos-manager] $ {cmd} --ask-sudo-password  (password supplied on stdin)\"; printf '%s\\n' \"$NM_TARGET_PW\" | $NM_NOTTY {cmd} --ask-sudo-password 2>&1; else echo \"[nixos-manager] $ {cmd} {sudo_flag}\"; {cmd} {sudo_flag} 2>&1; fi"
+            "if [ -n \"${{NM_TARGET_PW:-}}\" ]; then\necho \"[nixos-manager] $ {cmd} --ask-sudo-password  (password supplied on stdin)\"\n{}else\necho \"[nixos-manager] $ {cmd} {sudo_flag}\"\n{}fi\n",
+            crate::deploy::stoppable(&with_pw, stop_file),
+            crate::deploy::stoppable(&without, stop_file)
         )
     } else {
-        format!("echo \"[nixos-manager] $ {cmd}\"\n{cmd} 2>&1")
+        format!("echo \"[nixos-manager] $ {cmd}\"\n{}", crate::deploy::stoppable(&without, stop_file))
     };
+    s.push_str(&run_line);
     if needs_trust_step {
-        // Always undo the temporary trust, even when the rebuild fails.
-        s.push_str(&format!("set +e\n{run_line}\nRC=$?\nset -e\n"));
+        // Always undo the temporary trust, even when the rebuild fails or is stopped.
         s.push_str(&trust_snippet(target, false));
-        s.push_str("if [ \"$RC\" -ne 0 ]; then exit \"$RC\"; fi\n");
-    } else {
-        s.push_str(&run_line);
-        s.push('\n');
     }
+    s.push_str("if [ \"$RC\" -ne 0 ]; then exit \"$RC\"; fi\n");
     s.push_str(&format!("echo \"[nixos-manager] nixos-rebuild {action} on {} finished successfully.\"\n", target.ssh_target));
+    s.push_str(&crate::deploy::after_snippet(req.after, None));
     s
 }
 
@@ -282,8 +288,26 @@ pub async fn run_remote(job: JobHandle, req: DeployRequest, target: DeployTarget
         }
     }
     }
-    let lock_before = std::fs::read(staged.join("flake.lock")).ok();
-    let script = remote_script(&req, &target, &staged, kind, sudo_flag);
+    // flake.lock lives in /etc/nixos only. Pin the deployment to the target's
+    // own lock when it has one; otherwise fall back to this machine's; an
+    // upgrade (or no lock anywhere) resolves the inputs fresh.
+    if kind == ConfigKind::Flake {
+        let _ = std::fs::remove_file(staged.join("flake.lock"));
+        if req.upgrade {
+            job.system("Upgrade: flake inputs are resolved fresh (no flake.lock is used).").await;
+        } else if let Some(lock) = fetch_target_file(&target, "/etc/nixos/flake.lock").await {
+            let _ = std::fs::write(staged.join("flake.lock"), lock);
+            job.system("Using the target's /etc/nixos/flake.lock (pinned inputs).").await;
+        } else if let Ok(lock) = std::fs::read(std::path::Path::new(crate::deploy::ETC_NIXOS).join("flake.lock")) {
+            let _ = std::fs::write(staged.join("flake.lock"), lock);
+            job.system("The target has no /etc/nixos/flake.lock; using this machine's /etc/nixos/flake.lock. Missing inputs are resolved fresh.").await;
+        } else {
+            job.system("No flake.lock on the target or on this machine; flake inputs are resolved fresh.").await;
+        }
+    }
+    job.uses_stop_file().await;
+    let stop_file = job.stop_file().await;
+    let script = remote_script(&req, &target, &staged, kind, sudo_flag, &stop_file);
     let sender = job.line_sender();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let seen_w = seen.clone();
@@ -292,7 +316,7 @@ pub async fn run_remote(job: JobHandle, req: DeployRequest, target: DeployTarget
     if let Some(pw) = req.target_sudo_password.as_deref().filter(|p| !p.is_empty()) {
         cmd.env("NM_TARGET_PW", pw);
     }
-    let result = process::stream_cmd(cmd, move |is_err, line| {
+    let result = process::stream_cmd_job(&job, cmd, None, move |is_err, line| {
         // python's getpass complains when it has to read from a pipe; expected here
         if line.contains("GetPassWarning") || line.contains("fallback_getpass") || line.contains("Password input may be echoed") {
             return;
@@ -314,30 +338,45 @@ pub async fn run_remote(job: JobHandle, req: DeployRequest, target: DeployTarget
     } else if seen_lines.iter().any(|l| l.contains("Permission denied")) {
         job.system("Why it failed: SSH login was refused. Use \"Set up key access\" on the Remote page for this target.").await;
     }
-    // Keep the lock file nix wrote or updated, so the next deploy is reproducible.
-    if kind == ConfigKind::Flake {
-        if let Ok(lock_after) = std::fs::read(staged.join("flake.lock")) {
-            if lock_before.as_deref() != Some(lock_after.as_slice()) {
-                match std::fs::write(workdir.join("flake.lock"), &lock_after) {
-                    Ok(()) => job.system("flake.lock written to the working copy (inputs resolved for this deployment).").await,
-                    Err(e) => job.system(format!("could not write flake.lock back to the working copy: {e}")).await,
-                }
-            }
-        }
-    }
+    // The lock is deliberately NOT written back to the working folder.
     let _ = std::fs::remove_dir_all(&staged);
     match result {
         Ok(0) => job.succeeded().await,
         Ok(9) => job.failed("could not grant temporary trust on the target; see the log").await,
+        Ok(130) => job.failed("stopped by the user").await,
         Ok(code) => job.failed(format!("remote deployment exited with status {code}; see the log")).await,
         Err(e) => job.failed(e.to_string()).await,
     }
+}
+
+/// Reboot / power off the TARGET after a successful remote deployment, as
+/// root there (sudo password through NM_PW like the trust scripts).
+/// Body of `nm_after` for a remote target (see deploy::after_prelude).
+fn remote_after_body(target: &DeployTarget, after: Option<crate::types::AfterBuild>) -> String {
+    use crate::types::AfterBuild;
+    let (verb, cmd) = match after {
+        Some(AfterBuild::Reboot) => ("rebooting", "shutdown -r now"),
+        Some(AfterBuild::Poweroff) => ("powering off", "shutdown now"),
+        _ => return String::new(),
+    };
+    let t = sh(&target.ssh_target);
+    let script = format!("{REMOTE_IS_TRUSTED_FN}\nif as_root {cmd} 2>/dev/null; then echo \"[nixos-manager] target is {verb} now\"; else echo \"[nixos-manager] WARNING: could not run {cmd} on the target (sudo refused?)\"; fi\n");
+    format!(
+        "  {{ printf 'NM_PW=%q\\n' \"${{NM_TARGET_PW:-}}\"; cat <<'NM_REMOTE_EOF'\n{script}NM_REMOTE_EOF\n  }} | ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20 {t} bash -s || true\n"
+    )
 }
 
 /// Remote script printing the target's hardware configuration: first line
 /// `NM_HW=etc|generate|none`, then the file.
 pub fn target_hardware_script() -> &'static str {
     "if [ -f /etc/nixos/hardware-configuration.nix ]; then echo NM_HW=etc; cat /etc/nixos/hardware-configuration.nix; elif command -v nixos-generate-config >/dev/null 2>&1; then echo NM_HW=generate; nixos-generate-config --show-hardware-config 2>/dev/null; else echo NM_HW=none; fi\n"
+}
+
+/// Read one file from the target over SSH (None when absent or unreachable).
+async fn fetch_target_file(target: &DeployTarget, remote_path: &str) -> Option<String> {
+    let local = format!("ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20 {} cat {}", sh(&target.ssh_target), sh(remote_path));
+    let out = process::run("bash", &["-c", &local], None, std::time::Duration::from_secs(60)).await.ok()?;
+    (out.status == 0 && !out.stdout.trim().is_empty()).then_some(out.stdout)
 }
 
 /// Fetch the target's hardware-configuration.nix over SSH → (source, text).
@@ -469,21 +508,31 @@ mod tests {
             target: None,
             target_sudo_password: None,
             build_host: None,
+            after: None,
+            after_even_on_failure: false,
         };
         let t = DeployTarget { name: "server".into(), ssh_target: "vincent@cyber-server-1".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true };
-        let s = remote_script(&req, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo");
+        let s = remote_script(&req, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
         assert!(s.contains("nixos-rebuild switch --flake 'path:/tmp/staged#main' --target-host 'vincent@cyber-server-1' --sudo"), "{s}");
-        assert!(s.contains("| $NM_NOTTY nixos-rebuild switch") && s.contains("NM_NOTTY=\"setsid -w\""), "password must be read without a controlling terminal: {s}");
+        assert!(s.contains("--ask-sudo-password 2>&1'") && s.contains("setsid bash -c \"$NM_CMD\" &"), "password path must run in its own session: {s}");
         assert!(s.contains("BatchMode=yes"));
         assert!(!s.contains("rm -rf"));
         assert!(!s.contains("bootstrap"));
-        let s2 = remote_script(&req, &t, Path::new("/w"), ConfigKind::Legacy, "--use-remote-sudo");
+        let s2 = remote_script(&req, &t, Path::new("/w"), ConfigKind::Legacy, "--use-remote-sudo", Path::new("/tmp/nm-stop"));
         assert!(s2.contains("--no-flake -I 'nixos-config=/w/configuration.nix' --target-host"), "{s2}");
+        let req_after = DeployRequest { after: Some(crate::types::AfterBuild::Reboot), ..req.clone() };
+        let sa = remote_script(&req_after, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
+        assert!(sa.find("nm_after finished").unwrap() > sa.find("finished successfully").unwrap(), "{sa}");
+        assert!(sa.contains("shutdown -r now") && !sa.contains("trap 'NM_RC"), "{sa}");
+        let req_always = DeployRequest { after_even_on_failure: true, ..req_after.clone() };
+        let sb = remote_script(&req_always, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
+        assert!(sb.contains("trap 'NM_RC=$?"), "{sb}");
+        assert!(!s.contains("shutdown"));
         // root targets skip the trust step entirely
         let root_t = DeployTarget { ssh_target: "root@h".into(), use_remote_sudo: false, ..t.clone() };
-        let sr = remote_script(&req, &root_t, Path::new("/w"), ConfigKind::Flake, "--sudo");
+        let sr = remote_script(&req, &root_t, Path::new("/w"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
         assert!(!sr.contains("temporary"), "{sr}");
-        let s3 = remote_script(&req, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo");
+        let s3 = remote_script(&req, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
         let grant = s3.find("checking whether the user is trusted").unwrap();
         let rebuild = s3.find("nixos-rebuild switch").unwrap();
         let revoke = s3.find("removing the temporary nix trust").unwrap();
@@ -556,10 +605,10 @@ mod tests {
             let out = std::process::Command::new("bash").arg("-n").arg(&f).output().expect("bash");
             assert!(out.status.success(), "{label} does not parse:\n{}\n---\n{text}", String::from_utf8_lossy(&out.stderr));
         };
-        let req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: true, keep_configuration: None, hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None };
+        let req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: true, keep_configuration: None, hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: None, after_even_on_failure: false };
         let t = DeployTarget { name: "x".into(), ssh_target: "vincent@h".into(), flake_host: None, build_host: Some("b".into()), use_remote_sudo: true };
-        check("local deploy script", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Flake, "--sudo"));
-        check("local deploy script (legacy)", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Legacy, "--use-remote-sudo"));
+        check("local deploy script", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop")));
+        check("local deploy script (legacy)", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Legacy, "--use-remote-sudo", Path::new("/tmp/nm-stop")));
         check("remote grant script", &remote_grant_script("vincent"));
         check("remote revoke script", &remote_revoke_script("vincent"));
         // The inner `sudo -n sh -c '...'` bodies must parse as sh too.

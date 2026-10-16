@@ -13,6 +13,7 @@ export const routes: Routes = [
       { path: 'channels', loadComponent: () => import('./pages/channels/channels.component').then(m => m.ChannelsComponent) },
       { path: 'secrets', loadComponent: () => import('./pages/secrets/secrets.component').then(m => m.SecretsComponent) },
       { path: 'remote', loadComponent: () => import('./pages/remote/remote.component').then(m => m.RemoteComponent) },
+      { path: 'git', loadComponent: () => import('./pages/git/git.component').then(m => m.GitComponent) },
       { path: 'jobs', loadComponent: () => import('./pages/jobs/jobs.component').then(m => m.JobsComponent) },
       { path: 'jobs/:id', loadComponent: () => import('./pages/jobs/job-log.component').then(m => m.JobLogComponent) },
     ],

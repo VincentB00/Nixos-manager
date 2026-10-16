@@ -290,9 +290,10 @@ pub fn info_from_source(source: String, lock_path: Option<String>, lock: BTreeMa
     }
 }
 
-/// flake.lock from the working copy, else /etc/nixos (where sync.sh keeps it).
-pub fn read_lock(dir: &Path) -> (Option<String>, BTreeMap<String, LockedInput>) {
-    for candidate in [dir.join("flake.lock"), Path::new(crate::deploy::ETC_NIXOS).join("flake.lock")] {
+/// flake.lock from /etc/nixos (the only place it lives; a stray copy in the
+/// working folder is ignored and removed when the folder is opened).
+pub fn read_lock(_dir: &Path) -> (Option<String>, BTreeMap<String, LockedInput>) {
+    for candidate in [Path::new(crate::deploy::ETC_NIXOS).join("flake.lock")] {
         if let Ok(text) = std::fs::read_to_string(&candidate) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                 return (Some(candidate.to_string_lossy().to_string()), parse_lock(&v));
@@ -547,7 +548,22 @@ pub fn package_sets(dir: &Path) -> Vec<PackageSet> {
 
 /// Does a lock entry's original source describe the same repo and branch as
 /// the declared url? Unknown sources are accepted.
-fn lock_matches(url: Option<&str>, source: Option<&str>) -> bool {
+/// Remove a flake.lock from the working folder (it belongs in /etc/nixos
+/// only). Returns true when a file was removed. Never touches /etc/nixos.
+pub fn remove_workspace_lock(workdir: &Path) -> bool {
+    let lock = workdir.join("flake.lock");
+    if !lock.is_file() {
+        return false;
+    }
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(workdir), std::fs::canonicalize(crate::deploy::ETC_NIXOS)) {
+        if a == b {
+            return false;
+        }
+    }
+    std::fs::remove_file(&lock).is_ok()
+}
+
+pub fn lock_matches(url: Option<&str>, source: Option<&str>) -> bool {
     let (Some(url), Some(source)) = (url, source) else { return true };
     let repo = |s: &str| -> String {
         let body = s.split(':').nth(1).unwrap_or(s);

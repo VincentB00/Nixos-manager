@@ -27,6 +27,7 @@ pub mod error;
 pub mod flake;
 pub mod fsbrowse;
 pub mod fsops;
+pub mod git;
 pub mod hardware;
 pub mod jobs;
 pub mod nix;

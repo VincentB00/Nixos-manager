@@ -7,6 +7,8 @@ import type {
   OptionDoc, OptionsStatus, PackageSearchResult, Recipe, RenderResult, ConfigChange,
   FlakeInfo, FlakeOp, ConvertToFlakeRequest, ChannelsInfo, ChannelActionRequest, PackageSet, DiskInfo, OrganizeResult,
   SecretsStatus, SecretEntry, DeployTarget, RemoteCheck, HardwareSync, HardwarePullResult,
+  GitInfo, GitBranch, GitSuggestion, GitNetResult,
+  JobLogFile,
 } from './generated';
 
 export class ApiFailure extends Error {
@@ -39,6 +41,23 @@ export class ApiService {
   }
   suggestions() { return this.wrap(this.http.get<LocationSuggestion[]>(`${this.base}/fs/suggestions`)); }
   pullHardware(target: string, path: string) { return this.wrap(this.http.post<HardwarePullResult>(`${this.base}/remote/pull-hardware`, { target, path })); }
+  jobHistory() { return this.wrap(this.http.get<JobLogFile[]>(`${this.base}/jobs/history`)); }
+  jobHistoryDelete(name: string) { return this.wrap(this.http.delete<{ deleted: number }>(`${this.base}/jobs/history/${encodeURIComponent(name)}`)); }
+  jobHistoryClear() { return this.wrap(this.http.delete<{ deleted: number; bytes: number }>(`${this.base}/jobs/history`)); }
+  jobHistoryRead(name: string) { return this.wrap(this.http.get<string>(`${this.base}/jobs/history/${encodeURIComponent(name)}`)); }
+  stopJob(id: string) { return this.wrap(this.http.post<JobInfo>(`${this.base}/jobs/${encodeURIComponent(id)}/stop`, {})); }
+  // ── git ──
+  gitInfo(path: string) { return this.wrap(this.http.get<GitInfo>(`${this.base}/git/info`, { params: { path } })); }
+  gitBranches(path: string) { return this.wrap(this.http.get<GitBranch[]>(`${this.base}/git/branches`, { params: { path } })); }
+  gitDiff(path: string, file: string) { return this.wrap(this.http.get<string>(`${this.base}/git/diff`, { params: { path, file } })); }
+  gitSuggest(path: string) { return this.wrap(this.http.get<GitSuggestion>(`${this.base}/git/suggest`, { params: { path } })); }
+  gitSwitch(path: string, name: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/switch`, { path, name })); }
+  gitCreateBranch(path: string, name: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/branch`, { path, name })); }
+  gitCommit(path: string, message: string, paths: string[] | null, push: boolean, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/commit`, { path, message, paths, push, password })); }
+  gitPush(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/push`, { path, password })); }
+  gitFetch(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/fetch`, { path, password })); }
+  gitPull(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/pull`, { path, password })); }
+  gitIdentity(path: string, name: string, email: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/identity`, { path, name, email })); }
   hardwareSync(path: string) { return this.wrap(this.http.post<HardwareSync>(`${this.base}/location/hardware-sync`, { path })); }
   openLocation(path: string) { return this.wrap(this.http.post<LocationInfo>(`${this.base}/location/open`, { path })); }
 

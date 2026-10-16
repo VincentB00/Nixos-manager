@@ -31,6 +31,72 @@ pub async fn run(program: &str, args: &[&str], cwd: Option<&std::path::Path>, ti
     })
 }
 
+/// [`stream`] for a job: the child gets its own process group (so a stop
+/// request can signal the whole tree) and the group id is registered on the job.
+pub async fn stream_job<F>(
+    job: &crate::jobs::JobHandle,
+    program: &str,
+    args: &[&str],
+    cwd: Option<&std::path::Path>,
+    stdin_data: Option<Vec<u8>>,
+    on_line: F,
+) -> Result<i32>
+where
+    F: FnMut(bool, String) + Send + 'static,
+{
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(c) = cwd {
+        cmd.current_dir(c);
+    }
+    stream_cmd_job(job, cmd, stdin_data, on_line).await
+}
+
+/// [`stream_cmd`] for a job (own process group, pgid registered on the job).
+pub async fn stream_cmd_job<F>(job: &crate::jobs::JobHandle, mut cmd: Command, stdin_data: Option<Vec<u8>>, mut on_line: F) -> Result<i32>
+where
+    F: FnMut(bool, String) + Send + 'static,
+{
+    cmd.stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).process_group(0);
+    let mut child = cmd.spawn().map_err(|e| CoreError::Other(format!("failed to start command: {e}")))?;
+    if let Some(pid) = child.id() {
+        job.set_pgid(pid as i32).await;
+    }
+    if let Some(data) = stdin_data {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(&data).await;
+            let _ = stdin.shutdown().await;
+            drop(stdin);
+        }
+    }
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+    let tx1 = tx.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(l)) = lines.next_line().await {
+            if tx1.send((false, l)).is_err() {
+                break;
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(l)) = lines.next_line().await {
+            if tx.send((true, l)).is_err() {
+                break;
+            }
+        }
+    });
+    let waiter = tokio::spawn(async move { child.wait().await });
+    while let Some((is_err, line)) = rx.recv().await {
+        on_line(is_err, line);
+    }
+    let status = waiter.await.map_err(|e| CoreError::Other(e.to_string()))?.map_err(|e| CoreError::Other(e.to_string()))?;
+    Ok(status.code().unwrap_or(-1))
+}
+
 /// Like [`stream`] but for a caller-prepared `Command` (custom env, args).
 pub async fn stream_cmd<F>(mut cmd: Command, mut on_line: F) -> Result<i32>
 where

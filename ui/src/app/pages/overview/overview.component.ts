@@ -43,7 +43,7 @@ interface TreeRow { file: string; depth: number; enabled: boolean; via: ImportRe
               <dt>Hosts</dt><dd>{{ ov.location.hosts.length ? ov.location.hosts.join(', ') : (ov.location.kind === 'legacy' ? 'this machine' : 'none found statically') }}</dd>
               <dt>Nix files</dt><dd>{{ ws.nixFiles().length }}</dd>
               <dt>Hardware config</dt><dd>{{ ov.location.has_hardware_config ? 'present' : 'missing here (copied from /etc/nixos on sync)' }}</dd>
-              <dt>flake.lock</dt><dd>{{ ov.location.has_flake_lock ? 'present' : 'not here (kept in /etc/nixos)' }}</dd>
+              <dt>flake.lock</dt><dd>{{ ov.location.has_flake_lock ? 'present (stray: it belongs in /etc/nixos only and is removed when the folder is opened)' : 'kept in /etc/nixos only' }}</dd>
               <dt>Writable</dt><dd>{{ ov.location.writable ? 'yes' : 'no — edits will fail' }}</dd>
             </dl>
             @if (ov.location.kind === 'legacy') {

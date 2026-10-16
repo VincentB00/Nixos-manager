@@ -78,8 +78,88 @@ pub fn build_host_block(t: &DeployTarget, app_key: &Path) -> String {
     s.push_str(&format!("NM_SSH_OPTS={}\nexport NIX_SSHOPTS=\"$NM_SSH_OPTS -o BatchMode=yes -o ConnectTimeout=20\"\n", sh_quote(&opts)));
     s.push_str(&format!("echo \"[nixos-manager] compiling on {} (evaluated here, built there, result copied back and activated on this machine)\"\n", t.ssh_target));
     s.push_str(&crate::remote::trust_snippet(t, true));
-    s.push_str("set +e\n");
     s
+}
+
+/// Run `cmd_line` in its own session and poll `stop_file` meanwhile: when the
+/// file appears, the whole process group is terminated (SIGKILL after 20 s).
+/// Sets `RC` (130 when stopped). Works inside root scripts, where the daemon
+/// itself cannot signal anything.
+/// Power off / reboot this machine a few seconds after a successful build.
+/// Detached (own session) so the script, the daemon and the log flush finish
+/// first; nothing happens unless the script reached this point (RC == 0).
+pub(crate) fn after_snippet(after: Option<crate::types::AfterBuild>, _log_file: Option<&Path>) -> String {
+    if after_cmd(after).is_none() {
+        return String::new();
+    }
+    "nm_after finished\n".to_string()
+}
+
+fn after_cmd(after: Option<crate::types::AfterBuild>) -> Option<(&'static str, &'static str)> {
+    use crate::types::AfterBuild;
+    match after {
+        Some(AfterBuild::Reboot) => Some(("rebooting", "shutdown -r now")),
+        Some(AfterBuild::Poweroff) => Some(("powering off", "shutdown now")),
+        _ => None,
+    }
+}
+
+/// Defines `nm_after <outcome>` near the top of a script and, when the user
+/// wants the action even on failure, an EXIT trap that calls it for any
+/// non-zero exit except 130 (a manual stop: the user is there and watching).
+/// `body` is the shell text that performs the action.
+pub(crate) fn after_prelude(after: Option<crate::types::AfterBuild>, always: bool, log_file: Option<&Path>, body: &str) -> String {
+    let Some((verb, _)) = after_cmd(after) else { return String::new() };
+    let log = log_file.map(|p| format!(" The full log is saved at {}.", p.display())).unwrap_or_default();
+    let mut s = format!("nm_after() {{\n  echo \"[nixos-manager] build $1: {verb} in 5 seconds as requested.{log}\"\n{body}}}\n");
+    if always {
+        s.push_str("trap 'NM_RC=$?; if [ \"$NM_RC\" -ne 0 ] && [ \"$NM_RC\" -ne 130 ]; then nm_after \"failed (exit $NM_RC)\"; fi' EXIT\n");
+    }
+    s
+}
+
+/// Local action body for `nm_after`: detached so the script, the daemon and
+/// the log flush finish first.
+pub(crate) fn after_local_body(after: Option<crate::types::AfterBuild>) -> String {
+    match after_cmd(after) {
+        Some((_, cmd)) => format!("  setsid bash -c 'sleep 5; {cmd}' >/dev/null 2>&1 &\n"),
+        None => String::new(),
+    }
+}
+
+/// Dev-helper access (examples/dump_scripts.rs).
+pub fn stoppable_pub(cmd_line: &str, stop_file: &Path) -> String {
+    stoppable(cmd_line, stop_file)
+}
+
+pub(crate) fn stoppable(cmd_line: &str, stop_file: &Path) -> String {
+    format!(
+        r#"NM_STOP={stop}
+NM_CMD={cmd}
+setsid bash -c "$NM_CMD" &
+NM_PID=$!
+NM_STOPPED=0
+NM_T0=0
+while kill -0 "$NM_PID" 2>/dev/null; do
+  if [ -r "/proc/$NM_PID/stat" ] && [ "$(awk '{{print $3}}' "/proc/$NM_PID/stat" 2>/dev/null)" = Z ]; then break; fi
+  if [ "$NM_STOPPED" = 0 ] && [ -f "$NM_STOP" ]; then
+    echo "[nixos-manager] stop requested: terminating nixos-rebuild and everything it started..."
+    kill -TERM -- -"$NM_PID" 2>/dev/null || kill -TERM "$NM_PID" 2>/dev/null || true
+    NM_STOPPED=1; NM_T0=$SECONDS
+  elif [ "$NM_STOPPED" = 1 ] && [ $((SECONDS - NM_T0)) -ge 20 ]; then
+    echo "[nixos-manager] still running after 20s; killing it"
+    kill -KILL -- -"$NM_PID" 2>/dev/null || true
+    NM_STOPPED=2
+  fi
+  sleep 1
+done
+RC=0
+wait "$NM_PID" || RC=$?
+if [ "$NM_STOPPED" != 0 ]; then echo "[nixos-manager] stopped by the user"; RC=130; fi
+"#,
+        stop = sh_quote(&stop_file.to_string_lossy()),
+        cmd = sh_quote(cmd_line)
+    )
 }
 
 fn sh_quote(s: &str) -> String {
@@ -90,14 +170,16 @@ fn sh_quote(s: &str) -> String {
 ///   guard (not inside /etc/nixos) → stash flake.lock (unless upgrade) →
 ///   copy hardware-configuration.nix system→workdir → configuration.nix
 ///   conflict choice → rm -rf /etc/nixos/* → cp -r workdir/* /etc/nixos/ →
-///   drop or restore flake.lock → nixos-rebuild.
-fn build_script(req: &DeployRequest, workdir: &Path, kind: ConfigKind, invoking_uid: u32, invoking_gid: u32) -> String {
+///   drop or restore flake.lock (a lock in the working copy is never used;
+///   the file lives in /etc/nixos only) → nixos-rebuild.
+fn build_script(req: &DeployRequest, workdir: &Path, kind: ConfigKind, invoking_uid: u32, invoking_gid: u32, stop_file: &Path, log_file: Option<&Path>) -> String {
     let wd = sh_quote(&workdir.to_string_lossy());
     let action = action_arg(req.action);
     let mut s = String::new();
     s.push_str("set -euo pipefail\n");
     s.push_str(&format!("NIXOS_DIR={ETC_NIXOS}\nWORKDIR={wd}\n"));
     s.push_str("echo \"[nixos-manager] running as $(id -un) for workdir $WORKDIR\"\n");
+    s.push_str(&after_prelude(req.after, req.after_even_on_failure, log_file, &after_local_body(req.after)));
 
     if !req.skip_sync {
         s.push_str(r#"
@@ -159,6 +241,7 @@ echo "Clearing $NIXOS_DIR..."
 rm -rf "${NIXOS_DIR:?}"/*
 echo "Copying working copy to $NIXOS_DIR..."
 cp -r "$WORKDIR"/* "$NIXOS_DIR/"
+rm -f "$NIXOS_DIR/flake.lock"
 "#);
         if req.upgrade {
             s.push_str("rm -f \"$NIXOS_DIR/flake.lock\"\necho \"Removed $NIXOS_DIR/flake.lock for upgrade.\"\n");
@@ -185,24 +268,26 @@ fi
         }
         None => String::new(),
     };
-    match kind {
+    let rebuild = match kind {
         ConfigKind::Flake => {
             let host = req.host.clone().unwrap_or_default();
             if host.is_empty() {
-                s.push_str(&format!("nixos-rebuild {action} --flake \"$NIXOS_DIR\"{build_host_flag} 2>&1\n"));
+                format!("nixos-rebuild {action} --flake \"$NIXOS_DIR\"{build_host_flag} 2>&1")
             } else {
-                s.push_str(&format!("nixos-rebuild {action} --flake \"$NIXOS_DIR#{}\"{build_host_flag} 2>&1\n", host.replace('"', "")));
+                format!("nixos-rebuild {action} --flake \"$NIXOS_DIR#{}\"{build_host_flag} 2>&1", host.replace('"', ""))
             }
         }
-        _ => s.push_str(&format!("nixos-rebuild {action}{build_host_flag} 2>&1\n")),
-    }
+        _ => format!("nixos-rebuild {action}{build_host_flag} 2>&1"),
+    };
+    // own session + stop-file polling (Stop button); sets RC
+    s.push_str(&stoppable(&rebuild, stop_file));
     if req.build_host.is_some() {
-        // the nixos-rebuild line above ran under `set +e` (see build_host_block)
-        s.push_str("RC=$?\nset -e\n");
+        // always undo the temporary trust on the builder, also when stopped
         s.push_str(&crate::remote::trust_snippet(req.build_host.as_ref().unwrap(), false));
-        s.push_str("if [ \"$RC\" -ne 0 ]; then exit \"$RC\"; fi\n");
     }
+    s.push_str("if [ \"$RC\" -ne 0 ]; then exit \"$RC\"; fi\n");
     s.push_str(&format!("echo \"[nixos-manager] nixos-rebuild {action} finished successfully.\"\n"));
+    s.push_str(&after_snippet(req.after, log_file));
     s
 }
 
@@ -285,7 +370,10 @@ pub async fn run(job: JobHandle, req: DeployRequest) {
         job.system("Note: secrets.age changed since the last deploy but no secrets password was given; keeping previously installed secrets.").await;
     }
     let uid = unsafe_uid();
-    let mut script = build_script(&req, &workdir, kind, uid.0, uid.1);
+    job.uses_stop_file().await;
+    let stop_file = job.stop_file().await;
+    let log_file = job.log_file().await;
+    let mut script = build_script(&req, &workdir, kind, uid.0, uid.1, &stop_file, log_file.as_deref());
     if !secrets_prelude.is_empty() {
         let marker = "cd \"$NIXOS_DIR\"";
         script = script.replacen(marker, &format!("{secrets_prelude}{marker}"), 1);
@@ -305,6 +393,7 @@ pub async fn run(job: JobHandle, req: DeployRequest) {
     }
     match result {
         Ok(0) => job.succeeded().await,
+        Ok(130) => job.failed("stopped by the user").await,
         Ok(9) => job.failed("could not grant temporary trust on the builder; see the log").await,
         Ok(2) => job.failed("refused: the working copy is /etc/nixos itself").await,
         Ok(3) => job.failed("configuration.nix conflict: choose which version to keep and retry").await,
@@ -341,7 +430,8 @@ async fn run_root_script_inner(
     let sender = job.line_sender();
     let script_str = script_path.to_string_lossy().to_string();
     let args_ref: Vec<&str> = vec!["-S", "-p", "", "bash", script_str.as_str()];
-    let result = process::stream(
+    let result = process::stream_job(
+        job,
         "sudo",
         &args_ref,
         cwd,
@@ -423,20 +513,25 @@ mod tests {
             secrets_password: None,
             target: None,
             target_sudo_password: None,
+            after: None,
+            after_even_on_failure: false,
         };
-        let s = build_script(&req, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100);
+        let s = build_script(&req, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None);
         assert!(s.contains("refusing to sync"));
         assert!(s.contains("Preserving $NIXOS_DIR/flake.lock"));
         assert!(s.contains("cp \"$NIXOS_DIR/hardware-configuration.nix\" \"$WORKDIR/$HW_REL\""), "{s}");
         assert!(s.contains("HW_REL='hardware-configuration.nix'"), "{s}");
         let req_ws = DeployRequest { hardware: Some(HardwareChoice::Workspace), ..req.clone() };
-        let s_ws = build_script(&req_ws, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100);
+        let s_ws = build_script(&req_ws, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None);
         assert!(!s_ws.contains("cp \"$NIXOS_DIR/hardware-configuration.nix\""), "workspace choice must not copy the system file: {s_ws}");
         assert!(s_ws.contains("as confirmed"));
         assert!(s.contains("rm -rf \"${NIXOS_DIR:?}\"/*"));
         assert!(s.contains("cp -r \"$WORKDIR\"/* \"$NIXOS_DIR/\""));
         assert!(s.contains("Restored flake.lock"));
+        // a stray flake.lock in the working copy must never seed /etc/nixos
+        assert!(s.contains("cp -r \"$WORKDIR\"/* \"$NIXOS_DIR/\"\nrm -f \"$NIXOS_DIR/flake.lock\"\n"), "{s}");
         assert!(s.contains("nixos-rebuild switch --flake \"$NIXOS_DIR#main\""));
+        assert!(s.contains("NM_STOP='/tmp/nm-stop'") && s.contains("setsid bash -c \"$NM_CMD\" &") && s.contains("kill -TERM -- -\"$NM_PID\""), "stoppable wrapper: {s}");
         assert!(!s.contains("password"));
     }
 
@@ -456,17 +551,43 @@ mod tests {
             target: None,
             target_sudo_password: Some("pw".into()),
             build_host: Some(t),
+            after: None,
+            after_even_on_failure: false,
         };
-        let s = build_script(&req, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100);
-        assert!(s.contains("nixos-rebuild switch --flake \"$NIXOS_DIR#main\" --build-host 'vincent@lg' 2>&1"), "{s}");
+        let s = build_script(&req, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None);
+        assert!(s.contains("--build-host ") && s.contains("vincent@lg") && s.contains("NM_CMD='nixos-rebuild switch --flake \"$NIXOS_DIR#main\" --build-host "), "{s}");
         assert!(s.contains("NM_TARGET_PW=*)"), "password must be read from stdin: {s}");
         assert!(!s.contains("pw"), "password must not be in the script");
         assert!(s.contains("UserKnownHostsFile=") && s.contains("export NIX_SSHOPTS="));
-        assert!(s.contains("temporary trust") && s.contains("set +e\n") && s.contains("RC=$?\nset -e\n") && s.contains("exit \"$RC\""), "{s}");
+        assert!(s.contains("temporary trust") && s.contains("wait \"$NM_PID\" || RC=$?") && s.contains("exit \"$RC\""), "{s}");
         // the sync still happens (local activation)
         assert!(s.contains("rm -rf \"${NIXOS_DIR:?}\"/*"));
         let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(&s).status().unwrap();
         assert!(st.success(), "script must parse");
+    }
+
+    #[test]
+    fn after_build_action_only_after_success() {
+        let mut req = DeployRequest {
+            path: "/w".into(), host: Some("main".into()), action: RebuildAction::Boot, upgrade: false, keep_configuration: Some(KeepConfiguration::Local), hardware: None,
+            skip_sync: false, password: "x".into(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: Some(crate::types::AfterBuild::Reboot), after_even_on_failure: false,
+        };
+        let s = build_script(&req, Path::new("/w"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), Some(Path::new("/home/u/.local/state/nixos-manager/logs/x.log")));
+        let exit_at = s.find("if [ \"$RC\" -ne 0 ]; then exit \"$RC\"; fi").unwrap();
+        let call_at = s.find("nm_after finished").unwrap();
+        assert!(call_at > exit_at, "the success call must come after the success check");
+        assert!(s.contains("setsid bash -c 'sleep 5; shutdown -r now'") && s.contains("logs/x.log"));
+        assert!(!s.contains("trap 'NM_RC"), "no trap unless 'even on failure': {s}");
+        req.after_even_on_failure = true;
+        let s2 = build_script(&req, Path::new("/w"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None);
+        assert!(s2.contains("trap 'NM_RC=$?; if [ \"$NM_RC\" -ne 0 ] && [ \"$NM_RC\" -ne 130 ]; then nm_after"), "{s2}");
+        let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(&s2).status().unwrap();
+        assert!(st.success());
+        req.after_even_on_failure = false;
+        req.after = Some(crate::types::AfterBuild::Poweroff);
+        assert!(build_script(&req, Path::new("/w"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None).contains("sleep 5; shutdown now'"));
+        req.after = None;
+        assert!(!build_script(&req, Path::new("/w"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None).contains("shutdown"));
     }
 
     #[test]
@@ -484,10 +605,12 @@ mod tests {
             secrets_password: None,
             target: None,
             target_sudo_password: None,
+            after: None,
+            after_even_on_failure: false,
         };
-        let s = build_script(&req, Path::new("/w"), ConfigKind::Legacy, 1000, 100);
+        let s = build_script(&req, Path::new("/w"), ConfigKind::Legacy, 1000, 100, Path::new("/tmp/nm-stop"), None);
         assert!(s.contains("rm -f \"$NIXOS_DIR/flake.lock\""));
         assert!(!s.contains("Preserving"));
-        assert!(s.contains("nixos-rebuild boot 2>&1\n"));
+        assert!(s.contains("NM_CMD='nixos-rebuild boot 2>&1'"), "{s}");
     }
 }

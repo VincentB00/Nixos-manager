@@ -12,7 +12,7 @@ import { MatRadioModule } from '@angular/material/radio';
 import { MatSelectModule } from '@angular/material/select';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { ApiService, ApiFailure } from '../../api/api.service';
-import type { DeployPreflight, DeployTarget, HardwareChoice, KeepConfiguration, RebuildAction, RemoteCheck } from '../../api/generated';
+import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepConfiguration, RebuildAction, RemoteCheck } from '../../api/generated';
 
 @Component({
   selector: 'app-build-dialog',
@@ -76,7 +76,7 @@ import type { DeployPreflight, DeployTarget, HardwareChoice, KeepConfiguration, 
           <div class="note"><mat-icon>lan</mat-icon>
             <div>Build here, activate on <b>{{ t.name }}</b> (<span class="mono">{{ t.ssh_target }}</span>):
               <ol class="steps">
-                @if (upgrade && p.kind === 'flake') { <li>Update the working copy's flake inputs (<code>nix flake update</code>)</li> }
+                @if (p.kind === 'flake') { <li>{{ upgrade ? 'Resolve the flake inputs fresh (upgrade; no flake.lock is used)' : 'Pin the inputs with the flake.lock from /etc/nixos on the target (or from this machine when the target has none)' }}</li> }
                 <li>{{ useWorkspaceHardware ? 'Build with the working copy\'s ' + p.hardware.rel_path + ' (the target\'s own file is not used)' : 'Fetch and use the target\'s own /etc/nixos/hardware-configuration.nix' }}</li>
                 <li>Evaluate and build the system from the working copy on this machine{{ t.build_host ? ', compiling on ' + t.build_host : '' }}</li>
                 @if (!check()?.is_root) { <li>Check that your user is trusted by nix on the target; if not, grant it temporarily via sudo and remove it again at the end</li> }
@@ -168,6 +168,19 @@ import type { DeployPreflight, DeployTarget, HardwareChoice, KeepConfiguration, 
             <input matInput type="password" [(ngModel)]="targetSudoPassword" autocomplete="off" (keyup.enter)="start()" />
           </mat-form-field>
         }
+        <mat-form-field appearance="outline" style="width:100%">
+          <mat-label>After a successful build</mat-label>
+          <mat-select [(ngModel)]="after">
+            <mat-option value="none">Nothing: stay on</mat-option>
+            <mat-option value="reboot">{{ target() ? 'Reboot the target' : 'Reboot this machine' }}</mat-option>
+            <mat-option value="poweroff">{{ target() ? 'Power off the target' : 'Power off this machine' }}</mat-option>
+          </mat-select>
+          <mat-hint>For builds you want to start and walk away from. The log is also saved on disk (Jobs page → earlier logs), so you can read it afterwards.</mat-hint>
+        </mat-form-field>
+        @if (after !== 'none') {
+          <mat-checkbox [(ngModel)]="afterAlways" style="margin-top:4px">Also {{ after === 'reboot' ? 'reboot' : 'power off' }} when the build fails</mat-checkbox>
+          <div class="warning-box" style="margin-top:6px"><mat-icon>power_settings_new</mat-icon><span>{{ target() ? 'The target' : 'This machine' }} will {{ after === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the build {{ afterAlways ? 'ends, whether it succeeds or fails' : 'succeeds' }}. {{ afterAlways ? 'A manual Stop does not trigger it.' : 'Nothing happens if the build fails or is stopped.' }}{{ !target() && action !== 'switch' && action !== 'boot' ? ' Note: the action "' + action + '" does not activate anything, so a reboot only makes sense with switch or boot.' : '' }}</span></div>
+        }
         <div class="row">
           <mat-checkbox [(ngModel)]="upgrade">{{ target() ? 'Upgrade: update flake inputs first' : 'Upgrade: drop flake.lock so all inputs update (sync.sh --upgrade)' }}</mat-checkbox>
           @if (!target()) { <mat-checkbox [(ngModel)]="skipSync">Skip sync: rebuild /etc/nixos as it is now</mat-checkbox> }
@@ -251,6 +264,8 @@ export class BuildDialogComponent implements OnInit {
   targetName = '';
   targetSudoPassword = '';
   hardwareChoice: HardwareChoice = 'system';
+  after: AfterBuild = 'none';
+  afterAlways = false;
   buildHostName = '';
   bcheck = signal<RemoteCheck | null>(null);
   bchecking = signal(false);
@@ -356,6 +371,8 @@ export class BuildDialogComponent implements OnInit {
       target: this.target(),
       target_sudo_password: (this.target() || this.buildHost()) ? (this.targetSudoPassword || null) : null,
       build_host: this.buildHost(),
+      after: this.after,
+      after_even_on_failure: this.after !== 'none' && this.afterAlways,
     }).subscribe({
       next: job => {
         this.password = '';

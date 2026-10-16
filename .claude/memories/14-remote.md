@@ -235,3 +235,60 @@ Tests: `build_host_script_shape` (flags, stdin marker, no password in the
 script, bash -n); fragment e2e via `dump_scripts builder` under the fakes.
 The recipe pair (`remote_builder_use`/`_serve`) remains for permanent,
 automatic distributed builds.
+
+## Stop button for running jobs (2026-10-16, Vincent)
+`POST /api/jobs/{id}/stop` → `JobManager::stop`. Two mechanisms because the
+local build runs as root under `sudo -S` and the daemon (plain user) cannot
+signal root processes:
+1. **Stop file** `$TMPDIR/nixos-manager-stop-<job id>` (JobHandle::stop_file).
+   Both deploy scripts wrap nixos-rebuild in `deploy::stoppable(cmd,
+   stop_file)`: `setsid bash -c "$NM_CMD" &` (own session = own process
+   group, and no controlling tty → the target-sudo-password path no longer
+   needs its own setsid), then a 1 s poll loop: zombie check via
+   /proc/$pid/stat (kill -0 is true for zombies), on stop file → `kill -TERM
+   -- -$NM_PID`, SIGKILL after 20 s; `wait || RC=$?`; stopped → RC=130.
+   The temporary-trust revoke still runs after (RC!=0 → exit RC after it).
+   Stopping is only honoured around nixos-rebuild, never during the
+   rm -rf/cp sync phase (which is short and must not be interrupted).
+2. **Process group**: `process::stream_job/stream_cmd_job` spawn with
+   `process_group(0)` and register the pgid on the job. Jobs whose script
+   polls the stop file declare it (`JobHandle::uses_stop_file`); for them
+   `stop()` only writes the file and signals the group as a FALLBACK after
+   30 s (then SIGKILL 10 s later). Lesson from the first attempt: signalling
+   the group immediately killed the polling bash wrapper first, the real
+   work (own session) survived and kept the log pipe open, so the job hung
+   as "running" forever. Non-script jobs are signalled immediately (SIGKILL
+   after 20 s). For sudo jobs the signal is a harmless EPERM anyway.
+`set_status`: Failed + stop requested → `Cancelled` with "stopped by the
+user"; stop file removed on any terminal status. Exit 130 maps to failed →
+cancelled. UI: Stop button (confirm dialog warning that stopping during
+activation can leave the system half-switched) on the job log page.
+Tested: fake remote deploy with a sleeping nixos-rebuild: stop file after
+3 s → SIGTERM reaches the fake, RC=130, trust revoked, no leftovers.
+
+## After the build: reboot / power off + logs on disk (2026-10-16, Vincent)
+"Sometimes I just want to run the build and leave." `DeployRequest.after:
+Option<AfterBuild>` (none|poweroff|reboot). Only after SUCCESS (the script
+reaches the line after the RC check): local root script runs
+`setsid bash -c 'sleep 5; shutdown [-r] now' &` detached so the script
+exits, the job is marked succeeded and the log file is flushed first
+(`deploy::after_snippet`). Remote target: `remote_after_snippet` → ssh +
+`as_root shutdown …` with NM_PW (same mechanism as the trust scripts),
+WARNING if sudo refuses. Nothing happens on failure or stop.
+Every job log is now also written to
+`~/.local/state/nixos-manager/logs/<stamp>-<kind>-<id8>.log` (header
+lines `# title/kind/started/id`, `[app]` prefix for app lines, trailing
+`# status: …`), pruned to 60 files; `JobInfo.log_file`; `GET /api/jobs/
+history` + `/history/{name}` and an "Earlier logs on disk" section on the
+Jobs page, so the log can be read after the reboot.
+- Logs cleanup (same day): `DELETE /api/jobs/history/{name}` and
+  `DELETE /api/jobs/history` (all); logs of running jobs are never deleted
+  (`is_log_in_use`). Jobs page: per-log Delete button + "Clear all logs"
+  with confirm and total size.
+- "Also when the build fails" (same day): `DeployRequest.after_even_on_failure`.
+  Scripts define `nm_after <outcome>` early (`deploy::after_prelude`, body =
+  `after_local_body` or `remote::remote_after_body`); the success path calls
+  `nm_after finished`; with the flag an EXIT trap calls `nm_after "failed
+  (exit N)"` for any non-zero exit EXCEPT 130 (manual Stop: the user is
+  there). Covers failures in the sync phase too (set -e → trap). Verified
+  with fakes: failure → shutdown called, success → called, stop → not called.

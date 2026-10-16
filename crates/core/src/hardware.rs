@@ -71,7 +71,7 @@ pub fn sync_from_system(workdir: &Path, pull: Option<&HardwarePull>) -> Hardware
 fn sync_inner(workdir: &Path, system_file: &Path, pull: Option<&HardwarePull>) -> HardwareSync {
     let rel = rel_path_in(workdir);
     let rel_s = rel.to_string_lossy().to_string();
-    let done = |status: HardwareSyncStatus, message: String| HardwareSync { status, rel_path: rel_s.clone(), message };
+    let done = |status: HardwareSyncStatus, message: String| HardwareSync { status, rel_path: rel_s.clone(), message, lock_removed: false };
     if same_dir(workdir, Path::new(ETC_NIXOS)) {
         return done(HardwareSyncStatus::Skipped, "the working folder is /etc/nixos itself".into());
     }

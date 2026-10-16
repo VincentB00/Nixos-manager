@@ -455,6 +455,30 @@ pub struct JobInfo {
     pub finished_at: Option<String>,
     pub error: Option<String>,
     pub log_lines: u32,
+    /// Where the log is also written on disk (survives a reboot / daemon restart).
+    #[serde(default)]
+    pub log_file: Option<String>,
+}
+
+/// A job log kept on disk (see JobManager::history).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct JobLogFile {
+    pub name: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub started_at: Option<String>,
+    pub size: u64,
+}
+
+/// What to do with the machine after a successful build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum AfterBuild {
+    None,
+    Poweroff,
+    Reboot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -537,6 +561,9 @@ pub struct HardwareSync {
     pub status: HardwareSyncStatus,
     pub rel_path: String,
     pub message: String,
+    /// A flake.lock found in the working folder was removed (it lives in /etc/nixos only).
+    #[serde(default)]
+    pub lock_removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -600,6 +627,13 @@ pub struct DeployRequest {
     /// `nixos-rebuild --build-host`, then activate here (normal sync + local sudo).
     #[serde(default)]
     pub build_host: Option<DeployTarget>,
+    /// Power off or reboot after a SUCCESSFUL build (this machine, or the
+    /// target for remote deployments). Nothing happens on failure.
+    #[serde(default)]
+    pub after: Option<AfterBuild>,
+    /// Do the `after` action even when the build fails (never after a manual stop).
+    #[serde(default)]
+    pub after_even_on_failure: bool,
     /// sudo password of the SSH user on the target. Used for the temporary
     /// nix trust (only if the user is not trusted) and for activation; not
     /// needed when the user is root or has passwordless sudo there.
@@ -1094,4 +1128,121 @@ pub struct RemoteCheck {
     /// or "none" (deployment impossible).
     pub hardware_config: Option<String>,
     pub message: Option<String>,
+}
+
+// ───────────────────────── git ─────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum GitFileState {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitFileStatus {
+    pub path: String,
+    pub state: GitFileState,
+    /// Already in the index (git add); the app stages selected files itself anyway.
+    pub staged: bool,
+    pub old_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitRemote {
+    pub name: String,
+    /// Credentials in the URL are redacted.
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitCommit {
+    pub hash: String,
+    pub subject: String,
+    pub date: String,
+    pub author: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitInfo {
+    pub is_repo: bool,
+    pub root: Option<String>,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub upstream: Option<String>,
+    pub ahead: i32,
+    pub behind: i32,
+    pub remotes: Vec<GitRemote>,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
+    pub files: Vec<GitFileStatus>,
+    pub last_commit: Option<GitCommit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitBranch {
+    pub name: String,
+    pub current: bool,
+    pub upstream: Option<String>,
+    /// Exists only on the remote; switching to it creates a tracking branch.
+    pub remote_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitSuggestion {
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitBranchRequest {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitCommitRequest {
+    pub path: String,
+    pub message: String,
+    /// Files to commit; all changes when null.
+    pub paths: Option<Vec<String>>,
+    /// Push right after the commit.
+    pub push: bool,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitNetRequest {
+    pub path: String,
+    /// Password or key passphrase for the remote, only when git asked for one.
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitNetResult {
+    pub output: String,
+    pub info: GitInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitIdentityRequest {
+    pub path: String,
+    pub name: String,
+    pub email: String,
 }

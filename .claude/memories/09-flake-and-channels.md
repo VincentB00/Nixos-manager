@@ -58,3 +58,28 @@ conversion to flakes.
   because `location_info` now reports kind=flake.
 - The template's `nix flake` evaluation was checked with
   `nix eval path:<copy>#nixosConfigurations.<host>.config.networking.hostName`.
+
+## flake.lock lives in /etc/nixos only (Vincent, 2026-10-16)
+"I don't want the workspace to have flake.lock at all." Rules now:
+- Opening a folder removes a stray `<workdir>/flake.lock`
+  (`flake::remove_workspace_lock`, called from the hardware-sync endpoint,
+  reported as `HardwareSync.lock_removed` → snackbar). Never touches
+  /etc/nixos itself.
+- `flake::read_lock` reads /etc/nixos/flake.lock only (Flake page "locked"
+  info, lock_matches).
+- Staged copies (validate + remote deploy) skip `flake.lock` by name;
+  validate borrows /etc/nixos's; remote deploy pins to the TARGET's
+  /etc/nixos/flake.lock (fetched over ssh via `fetch_target_file`), falls
+  back to this machine's, resolves fresh on upgrade or when neither exists.
+  The lock is never written back to the working folder (the old copy-back
+  in run_remote is gone — it is what had put a flake.lock into lg-nixos).
+- Local build script: after `cp -r workdir/* /etc/nixos`, `rm -f
+  /etc/nixos/flake.lock` before restoring the preserved one, so a stray
+  workspace lock can never seed the system (test in `script_mirrors_sync_sh`).
+Consequence: remote deploys stay pinned per target; a target's lock only
+changes when a deployment with "upgrade" is done there… but note the
+target's /etc/nixos is NOT written by remote deploys, so its lock never
+advances by itself — an "upgrade" deploy resolves fresh each time until
+someone updates /etc/nixos/flake.lock on the target (e.g. a local build
+there). Acceptable for now; revisit if Vincent wants the resolved lock
+pushed to the target's /etc/nixos.

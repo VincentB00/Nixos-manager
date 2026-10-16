@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ApiService, ApiFailure } from '../api/api.service';
-import type { ConfigOverview, FileSummary, FlakeVar, PackageSet } from '../api/generated';
+import type { ConfigOverview, FileSummary, FlakeVar, GitInfo, PackageSet } from '../api/generated';
 
 /** The currently opened configuration folder and its discovery result. */
 @Injectable({ providedIn: 'root' })
@@ -17,6 +17,8 @@ export class WorkspaceService {
   /** Package sets modules can draw from (pkgs, pkgs-<channel>, ...). */
   /** Global values from flake.nix (`vars = { ... }`), empty for classic configs. */
   readonly flakeVars = signal<FlakeVar[]>([]);
+  /** Git state of the folder (null until loaded; is_repo=false when not a repository). */
+  readonly gitInfo = signal<GitInfo | null>(null);
   readonly packageSets = signal<PackageSet[]>([{ name: 'pkgs', label: 'main', input: null, flake_ref: null, is_default: true, bits32: false }]);
 
   readonly nixFiles = computed(() => (this.overview()?.files ?? []).filter(f => f.rel_path.endsWith('.nix')));
@@ -37,6 +39,10 @@ export class WorkspaceService {
     // of truth and is copied into the folder on open (users rarely edit it).
     this.api.hardwareSync(path).subscribe({
       next: r => {
+        if (r.lock_removed) {
+          this.snack.open('flake.lock removed from the working folder: it lives in /etc/nixos only', 'OK', { duration: 8000 });
+          if (r.status !== 'copied' && r.status !== 'refreshed') this.reload();
+        }
         if (r.status === 'copied' || r.status === 'refreshed') {
           this.snack.open(r.message, 'OK', { duration: 8000 });
           this.reload();
@@ -55,6 +61,7 @@ export class WorkspaceService {
     this.loading.set(true);
     this.error.set(null);
     this.api.packageSets(path).subscribe({ next: sets => this.packageSets.set(sets), error: () => {} });
+    this.api.gitInfo(path).subscribe({ next: g => this.gitInfo.set(g), error: () => this.gitInfo.set(null) });
     this.api.flakeInfo(path).subscribe({ next: f => this.flakeVars.set(f.vars ?? []), error: () => this.flakeVars.set([]) });
     this.api.overview(path).subscribe({
       next: ov => {

@@ -46,6 +46,9 @@ import type { FileSummary } from '../../api/generated';
       <span class="path mono muted">{{ ws.path() }}</span>
       <span class="spacer"></span>
       @if (hosts().length > 0) {
+        @if (ws.gitInfo(); as g) { @if (g.is_repo) {
+          <button mat-button routerLink="git" queryParamsHandling="merge" [matTooltip]="'git branch · ' + (g.files.length ? g.files.length + ' uncommitted change(s)' : 'clean')"><mat-icon>fork_right</mat-icon> {{ g.detached ? 'detached' : (g.branch ?? '?') }}@if (g.files.length) { <span class="tag warning" style="margin-left:6px">{{ g.files.length }}</span> }</button>
+        } }
         <button mat-button [matMenuTriggerFor]="hostMenu"><mat-icon>dns</mat-icon> {{ ws.selectedHost() ?? 'host' }}</button>
         <mat-menu #hostMenu="matMenu">
           @for (h of hosts(); track h) { <button mat-menu-item (click)="ws.selectedHost.set(h)">{{ h }}</button> }
@@ -72,6 +75,11 @@ import type { FileSummary } from '../../api/generated';
           <a mat-list-item routerLink="remote" queryParamsHandling="merge" routerLinkActive="active">
             <mat-icon matListItemIcon>lan</mat-icon><span matListItemTitle>Remote</span><span matListItemLine class="muted">deploy targets · remote builders</span>
           </a>
+          @if (ws.gitInfo()?.is_repo) {
+            <a mat-list-item routerLink="git" queryParamsHandling="merge" routerLinkActive="active">
+              <mat-icon matListItemIcon>commit</mat-icon><span matListItemTitle>Git</span><span matListItemLine class="muted">{{ gitLine() }}</span>
+            </a>
+          }
           @if (ws.overview()?.location?.kind === 'flake') {
             <a mat-list-item routerLink="flake" queryParamsHandling="merge" routerLinkActive="active">
               <mat-icon matListItemIcon>ac_unit</mat-icon><span matListItemTitle>Flake</span><span matListItemLine class="muted">inputs, package sets, global vars</span>
@@ -150,6 +158,16 @@ export class WorkspaceComponent implements OnInit {
       if (view === 'tree' || view === 'list') this.setViewMode(view);
       if (this.ws.path() !== path) this.ws.open(path);
     });
+  }
+
+  gitLine(): string {
+    const g = this.ws.gitInfo();
+    if (!g?.is_repo) return '';
+    const parts = [g.detached ? 'detached HEAD' : (g.branch ?? '?')];
+    if (g.files.length) parts.push(`${g.files.length} uncommitted`);
+    if (g.ahead) parts.push(`${g.ahead} to push`);
+    if (g.behind) parts.push(`${g.behind} to pull`);
+    return parts.join(' · ');
   }
 
   isUnreachable(f: FileSummary) {

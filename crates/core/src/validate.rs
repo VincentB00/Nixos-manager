@@ -15,7 +15,9 @@ use crate::types::{ConfigKind, LogLine, LogStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const SKIP: &[&str] = &[".git", ".claude", "node_modules", "result", "target", "secrets.age"];
+// flake.lock lives in /etc/nixos only (Vincent, 2026-10-16): a stray one in the
+// working folder is never staged; callers borrow the right lock explicitly.
+const SKIP: &[&str] = &[".git", ".claude", "node_modules", "result", "target", "secrets.age", "flake.lock"];
 
 /// Plain copy of the working folder (no .git, no secrets.age) so a flake
 /// reference sees every file, tracked or not. Nothing is borrowed from
