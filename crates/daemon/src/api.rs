@@ -47,6 +47,7 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
         .route("/fs/suggestions", get(fs_suggestions))
         .route("/location/open", post(open_location))
         .route("/location/hardware-sync", post(hardware_sync))
+        .route("/search", get(search_files))
         .route("/git/info", get(git_info))
         .route("/git/branches", get(git_branches))
         .route("/git/diff", get(git_diff))
@@ -177,6 +178,17 @@ async fn hardware_pull(State(ctx): State<AppCtx>, Json(req): Json<HardwarePullRe
     let (rel, pull) = nixos_manager_core::hardware::install_pulled(&path, &target.name, &text).map_err(|e| CoreError::Invalid(format!("cannot write the file: {e}")))?;
     ctx.store.set_hardware_pull(&path.to_string_lossy(), pull).await?;
     Ok(Json(HardwarePullResult { target: target.name, source, rel_path: rel.to_string_lossy().to_string(), bytes: text.len() as u64 }))
+}
+
+#[derive(Deserialize)]
+struct FindQuery {
+    path: String,
+    q: String,
+    mode: Option<String>,
+}
+
+async fn search_files(Query(q): Query<FindQuery>) -> ApiResult<SearchResult> {
+    Ok(Json(nixos_manager_core::search::search(&root_of(&q.path), &q.q, q.mode.as_deref().unwrap_or("both"))))
 }
 
 // ───────────────────────── git ─────────────────────────

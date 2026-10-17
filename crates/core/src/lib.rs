@@ -37,6 +37,7 @@ pub mod organize;
 pub mod packages;
 pub mod process;
 pub mod remote;
+pub mod search;
 pub mod secrets;
 pub mod state;
 pub mod types;

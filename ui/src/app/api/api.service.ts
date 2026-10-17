@@ -8,7 +8,7 @@ import type {
   FlakeInfo, FlakeOp, ConvertToFlakeRequest, ChannelsInfo, ChannelActionRequest, PackageSet, DiskInfo, OrganizeResult,
   SecretsStatus, SecretEntry, DeployTarget, RemoteCheck, HardwareSync, HardwarePullResult,
   GitInfo, GitBranch, GitSuggestion, GitNetResult,
-  JobLogFile,
+  JobLogFile, SearchResult,
 } from './generated';
 
 export class ApiFailure extends Error {
@@ -58,6 +58,7 @@ export class ApiService {
   gitFetch(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/fetch`, { path, password })); }
   gitPull(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/pull`, { path, password })); }
   gitIdentity(path: string, name: string, email: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/identity`, { path, name, email })); }
+  search(path: string, q: string, mode: 'both' | 'name' | 'content') { return this.wrap(this.http.get<SearchResult>(`${this.base}/search`, { params: { path, q, mode } })); }
   hardwareSync(path: string) { return this.wrap(this.http.post<HardwareSync>(`${this.base}/location/hardware-sync`, { path })); }
   openLocation(path: string) { return this.wrap(this.http.post<LocationInfo>(`${this.base}/location/open`, { path })); }
 

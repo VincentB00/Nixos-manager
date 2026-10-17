@@ -106,6 +106,8 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
   valueChange = output<string>();
   /** Ctrl+S / Cmd+S pressed inside the editor. */
   save = output<void>();
+  /** The editor exists (safe to call revealLine). */
+  ready = output<void>();
 
   private host = viewChild.required<ElementRef<HTMLDivElement>>('host');
   private editor?: monaco.editor.IStandaloneCodeEditor;
@@ -145,6 +147,7 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
     (this.host().nativeElement as HTMLDivElement & { __monaco?: monaco.editor.IStandaloneCodeEditor }).__monaco = this.editor;
     // Ctrl+S saves instead of opening the browser's "save page" dialog
     this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.save.emit());
+    this.ready.emit();
     this.editor.onDidChangeModelContent(() => {
       this.suppress = true;
       try { this.valueChange.emit(this.editor!.getValue()); } finally { this.suppress = false; }
@@ -162,6 +165,15 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
   }
 
   focus() { this.editor?.focus(); }
+
+  /** Scroll to a 1-based line, put the caret there and highlight it briefly. */
+  revealLine(line: number) {
+    const ed = this.editor;
+    if (!ed) return;
+    ed.revealLineInCenter(line);
+    ed.setPosition({ lineNumber: line, column: 1 });
+    ed.focus();
+  }
 
   ngOnDestroy() {
     this.editor?.dispose();

@@ -17,12 +17,18 @@ import { BuildDialogComponent } from '../build/build-dialog.component';
 import { NewFileDialogComponent } from '../new-file/new-file-dialog.component';
 import { FileTreeComponent } from './file-tree.component';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
-import type { FileSummary } from '../../api/generated';
+import type { FileSummary, SearchResult } from '../../api/generated';
 
 @Component({
   selector: 'app-workspace',
   imports: [RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatSidenavModule, MatListModule, MatIconModule, MatButtonModule, MatMenuModule, MatProgressBarModule, MatTooltipModule, MatDialogModule, MatBadgeModule, MatButtonToggleModule, FileTreeComponent],
   styles: [`
+    .search { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 16px; }
+    .search input { flex: 1; min-width: 0; background: var(--mat-sys-surface-container); border: 1px solid var(--mat-sys-outline-variant); border-radius: 16px; padding: 6px 10px; color: inherit; font: inherit; font-size: .9em; outline: none; }
+    .search input:focus { border-color: var(--mat-sys-primary); }
+    .file-item.hit { height: 30px; font-size: .82em; opacity: .9; }
+    .file-item.hit .ln { display: inline-block; min-width: 2.6em; color: var(--mat-sys-on-surface-variant); font-family: monospace; }
+    .file-item.hit [matListItemTitle] { font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 12px; }
     :host { display: flex; flex-direction: column; height: 100vh; }
     mat-toolbar { gap: 8px; }
     .path { font-size: 0.85em; opacity: .85; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -89,6 +95,25 @@ import type { FileSummary } from '../../api/generated';
               <mat-icon matListItemIcon>rss_feed</mat-icon><span matListItemTitle>Channels</span><span matListItemLine class="muted">package sources · switch to flakes</span>
             </a>
           }
+          <div class="search">
+            <mat-icon class="muted">search</mat-icon>
+            <input #searchBox type="text" placeholder="Find in files… (name or text)" [value]="searchQ()" (input)="search(searchBox.value)" (keyup.escape)="search(''); searchBox.value = ''" />
+            @if (searchQ()) { <button mat-icon-button (click)="search(''); searchBox.value = ''" matTooltip="Clear"><mat-icon>close</mat-icon></button> }
+          </div>
+          @if (searchQ()) {
+            <div class="group">{{ searching() ? 'Searching…' : (searchRes()?.files?.length ?? 0) + ' file(s) match' }}{{ searchRes()?.truncated ? ' (more hits not shown)' : '' }}</div>
+            @for (f of searchRes()?.files ?? []; track f.rel_path) {
+              <a mat-list-item class="file-item" [routerLink]="f.rel_path.endsWith('flake.nix') ? 'flake' : 'file'" [queryParams]="{ f: f.rel_path, line: null }" queryParamsHandling="merge" [matTooltip]="f.rel_path" matTooltipPosition="right">
+                <span matListItemTitle>{{ f.rel_path }}@if (f.name_match) { <span class="tag" style="margin-left:6px">name</span> }</span>
+              </a>
+              @for (m of f.matches; track m.line) {
+                <a mat-list-item class="file-item hit" routerLink="file" [queryParams]="{ f: f.rel_path, line: m.line }" queryParamsHandling="merge" [matTooltip]="m.text" matTooltipPosition="right">
+                  <span matListItemTitle><span class="ln">{{ m.line }}</span>{{ m.text }}</span>
+                </a>
+              }
+            }
+            @if (!searching() && !(searchRes()?.files?.length)) { <div class="muted" style="padding:8px 16px; font-size:.85em">Nothing found.</div> }
+          } @else {
           <div class="modes">
             <mat-button-toggle-group [value]="viewMode()" (change)="setViewMode($event.value)" hideSingleSelectionIndicator>
               <mat-button-toggle value="list" matTooltip="Nix files only, flat"><mat-icon>view_list</mat-icon></mat-button-toggle>
@@ -118,6 +143,7 @@ import type { FileSummary } from '../../api/generated';
               }
             }
           }
+                  }
         </mat-nav-list>
       </mat-sidenav>
       <mat-sidenav-content>
@@ -158,6 +184,25 @@ export class WorkspaceComponent implements OnInit {
       if (view === 'tree' || view === 'list') this.setViewMode(view);
       if (this.ws.path() !== path) this.ws.open(path);
     });
+  }
+
+  searchQ = signal('');
+  searchRes = signal<SearchResult | null>(null);
+  searching = signal(false);
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
+  search(q: string) {
+    this.searchQ.set(q);
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    if (!q.trim()) { this.searchRes.set(null); this.searching.set(false); return; }
+    this.searching.set(true);
+    this.searchTimer = setTimeout(() => {
+      const path = this.ws.path();
+      if (!path) return;
+      this.api.search(path, q, 'both').subscribe({
+        next: r => { if (r.query === q.trim()) { this.searchRes.set(r); this.searching.set(false); } },
+        error: () => this.searching.set(false),
+      });
+    }, 250);
   }
 
   gitLine(): string {

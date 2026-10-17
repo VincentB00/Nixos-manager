@@ -170,3 +170,16 @@ cd ui && npm run build                     # then the daemon serves it
   longer attached as the entry's comment text (`leading_comments(.., true)`).
   Tests: `comment_out_a_group_and_restore_it`,
   `commented_out_group_and_setting_show_as_disabled`.
+
+## 2026-10-17: Find in files
+`crates/core/src/search.rs` (`GET /api/search?path&q&mode=both|name|content`):
+case-insensitive substring over `discover::list_files` (same skip rules as
+the file list), name matches on the relative path, content matches per
+line (files ≤ 2 MB, UTF-8 only, secrets.age skipped), limits 50/file and
+400 total (`truncated`), name matches sorted first. UI: search box at the
+top of the sidebar (workspace.component, 250 ms debounce); while a query is
+set the file lists are replaced by results: file rows (tag "name" when the
+path matched) and indented hit rows "<line> <snippet>". A hit opens the file
+view with `?line=N`: file-view switches to Code mode and the Monaco wrapper
+`revealLine()`s it (via the `ready` output when the editor is created later).
+Esc or the × clears the search.

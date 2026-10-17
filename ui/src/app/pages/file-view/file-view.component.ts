@@ -97,7 +97,7 @@ import type { EditOp, NixFileView } from '../../api/generated';
             @if (!v.args.includes('vars') && v.args.length) { <span class="muted hint">This module does not receive <span class="mono">vars</span> yet; it is added when you save a file that uses it.</span> }
           </div>
         }
-        <app-code-editor #wholeArea [value]="codeText" (valueChange)="codeText = $event" (save)="codeText !== v.source && saveWhole()" [language]="isNix() ? 'nix' : 'plaintext'" height="calc(100vh - 290px)" />
+        <app-code-editor #wholeArea [value]="codeText" (valueChange)="codeText = $event" (save)="codeText !== v.source && saveWhole()" (ready)="editorReady()" [language]="isNix() ? 'nix' : 'plaintext'" height="calc(100vh - 290px)" />
         <div class="flex" style="margin-top:8px">
           <button mat-flat-button (click)="saveWhole()" [disabled]="codeText === v.source"><mat-icon>save</mat-icon> Save file</button>
           <button mat-button (click)="codeText = v.source" [disabled]="codeText === v.source">Revert</button>
@@ -129,10 +129,17 @@ export class FileViewComponent {
   constructor() {
     const sub = this.route.queryParamMap.subscribe(q => {
       const f = q.get('f');
+      const line = Number(q.get('line') ?? '');
       if (f && f !== this.file()) {
         this.file.set(f);
         if (!f.endsWith('.nix')) this.mode.set('code');
         this.load();
+      }
+      if (f && line > 0) {
+        // from the search results: show the code at that line
+        this.pendingLine = line;
+        this.mode.set('code');
+        this.wholeArea()?.revealLine(line);
       }
     });
     this.destroyRef.onDestroy(() => sub.unsubscribe());
@@ -239,6 +246,14 @@ export class FileViewComponent {
   interp(name: string) { return '$' + '{vars.' + name + '}'; }
   insertIntoCode(text: string) {
     this.wholeArea()?.insertAtCursor(text);
+  }
+  private pendingLine = 0;
+  editorReady() {
+    if (this.pendingLine > 0) {
+      const l = this.pendingLine;
+      this.pendingLine = 0;
+      setTimeout(() => this.wholeArea()?.revealLine(l), 50);
+    }
   }
 
 

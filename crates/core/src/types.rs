@@ -1261,3 +1261,31 @@ pub struct GitIdentityRequest {
     pub name: String,
     pub email: String,
 }
+
+// ───────────────────────── search ─────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchMatch {
+    /// 1-based line.
+    pub line: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchFile {
+    pub rel_path: String,
+    /// The path itself contains the query.
+    pub name_match: bool,
+    pub matches: Vec<SearchMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchResult {
+    pub query: String,
+    pub files: Vec<SearchFile>,
+    /// Some matches were left out (limits reached).
+    pub truncated: bool,
+}
