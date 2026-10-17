@@ -127,6 +127,40 @@ pub(crate) fn after_local_body(after: Option<crate::types::AfterBuild>) -> Strin
     }
 }
 
+/// After a deployment to a target: power off / reboot THIS machine (the
+/// daemon's user, no root script involved). logind lets an active local
+/// session do it; otherwise sudo with the given password; scheduled 5 s
+/// later and detached so the job finishes and the log is flushed first.
+pub(crate) async fn local_after_action(job: &JobHandle, after: Option<crate::types::AfterBuild>, even_on_failure: bool, code: i32, password: &str) {
+    use crate::types::AfterBuild;
+    let (verb, unit, flag) = match after {
+        Some(AfterBuild::Reboot) => ("rebooting", "reboot", "-r"),
+        Some(AfterBuild::Poweroff) => ("powering off", "poweroff", ""),
+        _ => return,
+    };
+    if code == 130 {
+        job.system("Stopped by the user: this machine stays on.").await;
+        return;
+    }
+    if code != 0 && !even_on_failure {
+        job.system(format!("The deployment failed, so this machine is not {verb} (tick \"also when the build fails\" to change that).")).await;
+        return;
+    }
+    let outcome = if code == 0 { "succeeded" } else { "failed" };
+    let script = format!(
+        "sleep 5; systemctl --no-ask-password {unit} 2>/dev/null && exit 0; if [ -n \"${{NM_LOCAL_PW:-}}\" ]; then printf '%s\\n' \"$NM_LOCAL_PW\" | sudo -S -p '' shutdown {flag} now; fi"
+    );
+    let mut cmd = tokio::process::Command::new("setsid");
+    cmd.arg("bash").arg("-c").arg(&script).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    if !password.is_empty() {
+        cmd.env("NM_LOCAL_PW", password);
+    }
+    match cmd.spawn() {
+        Ok(_) => job.system(format!("Deployment {outcome}: this machine is {verb} in 5 seconds as requested{}.", if password.is_empty() { " (through logind; if nothing happens, your session is not allowed to and a sudo password is needed in the build dialog)" } else { "" })).await,
+        Err(e) => job.system(format!("WARNING: could not schedule {verb} this machine: {e}")).await,
+    }
+}
+
 /// Dev-helper access (examples/dump_scripts.rs).
 pub fn stoppable_pub(cmd_line: &str, stop_file: &Path) -> String {
     stoppable(cmd_line, stop_file)
@@ -172,12 +206,36 @@ fn sh_quote(s: &str) -> String {
 ///   conflict choice → rm -rf /etc/nixos/* → cp -r workdir/* /etc/nixos/ →
 ///   drop or restore flake.lock (a lock in the working copy is never used;
 ///   the file lives in /etc/nixos only) → nixos-rebuild.
+/// Extra environment / flags for the root script (on-target deployments).
+#[derive(Default, Clone)]
+pub struct ScriptEnv {
+    pub exports: Vec<(String, String)>,
+    /// Add --impure to a flake rebuild (needed for NIXPKGS_ALLOW_UNFREE to count).
+    pub impure: bool,
+}
+
 fn build_script(req: &DeployRequest, workdir: &Path, kind: ConfigKind, invoking_uid: u32, invoking_gid: u32, stop_file: &Path, log_file: Option<&Path>) -> String {
+    build_script_with(req, workdir, kind, invoking_uid, invoking_gid, stop_file, log_file, &ScriptEnv::default())
+}
+
+/// Dev-helper access (examples/dump_scripts.rs).
+#[allow(clippy::too_many_arguments)]
+pub fn build_script_with_pub(req: &DeployRequest, workdir: &Path, kind: ConfigKind, uid: u32, gid: u32, stop_file: &Path, log_file: Option<&Path>, env: &ScriptEnv) -> String {
+    build_script_with(req, workdir, kind, uid, gid, stop_file, log_file, env)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_script_with(req: &DeployRequest, workdir: &Path, kind: ConfigKind, invoking_uid: u32, invoking_gid: u32, stop_file: &Path, log_file: Option<&Path>, env: &ScriptEnv) -> String {
     let wd = sh_quote(&workdir.to_string_lossy());
     let action = action_arg(req.action);
     let mut s = String::new();
     s.push_str("set -euo pipefail\n");
-    s.push_str(&format!("NIXOS_DIR={ETC_NIXOS}\nWORKDIR={wd}\n"));
+    for (k, v) in &env.exports {
+        s.push_str(&format!("export {k}={}\n", sh_quote(v)));
+    }
+    // exported: the rebuild runs in a child bash (see `stoppable`) that must
+    // see them, otherwise "$NIXOS_DIR#host" expands to "#host" there
+    s.push_str(&format!("export NIXOS_DIR={ETC_NIXOS}\nexport WORKDIR={wd}\n"));
     s.push_str("echo \"[nixos-manager] running as $(id -un) for workdir $WORKDIR\"\n");
     s.push_str(&after_prelude(req.after, req.after_even_on_failure, log_file, &after_local_body(req.after)));
 
@@ -268,13 +326,14 @@ fi
         }
         None => String::new(),
     };
+    let impure = if env.impure && kind == ConfigKind::Flake { " --impure" } else { "" };
     let rebuild = match kind {
         ConfigKind::Flake => {
             let host = req.host.clone().unwrap_or_default();
             if host.is_empty() {
-                format!("nixos-rebuild {action} --flake \"$NIXOS_DIR\"{build_host_flag} 2>&1")
+                format!("nixos-rebuild {action} --flake \"$NIXOS_DIR\"{build_host_flag}{impure} 2>&1")
             } else {
-                format!("nixos-rebuild {action} --flake \"$NIXOS_DIR#{}\"{build_host_flag} 2>&1", host.replace('"', ""))
+                format!("nixos-rebuild {action} --flake \"$NIXOS_DIR#{}\"{build_host_flag}{impure} 2>&1", host.replace('"', ""))
             }
         }
         _ => format!("nixos-rebuild {action}{build_host_flag} 2>&1"),
@@ -292,7 +351,7 @@ fi
 }
 
 /// Validate the sudo password without running anything.
-async fn check_sudo(password: &str) -> Result<()> {
+pub(crate) async fn check_sudo(password: &str) -> Result<()> {
     let mut lines: Vec<String> = Vec::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let code = process::stream(
@@ -321,6 +380,9 @@ async fn check_sudo(password: &str) -> Result<()> {
 /// Run the whole deploy as a job. Resolves when the job has finished.
 pub async fn run(job: JobHandle, req: DeployRequest) {
     if let Some(target) = req.target.clone() {
+        if req.on_target {
+            return crate::remote::run_on_target(job, req, target).await;
+        }
         return crate::remote::run_remote(job, req, target).await;
     }
     let workdir = PathBuf::from(&req.path);
@@ -515,6 +577,9 @@ mod tests {
             target_sudo_password: None,
             after: None,
             after_even_on_failure: false,
+            after_local: None,
+            on_target: false,
+            allow_unfree_env: false,
         };
         let s = build_script(&req, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None);
         assert!(s.contains("refusing to sync"));
@@ -532,6 +597,10 @@ mod tests {
         assert!(s.contains("cp -r \"$WORKDIR\"/* \"$NIXOS_DIR/\"\nrm -f \"$NIXOS_DIR/flake.lock\"\n"), "{s}");
         assert!(s.contains("nixos-rebuild switch --flake \"$NIXOS_DIR#main\""));
         assert!(s.contains("NM_STOP='/tmp/nm-stop'") && s.contains("setsid bash -c \"$NM_CMD\" &") && s.contains("kill -TERM -- -\"$NM_PID\""), "stoppable wrapper: {s}");
+        // the rebuild command runs in a child bash: NIXOS_DIR must be exported
+        assert!(s.contains("export NIXOS_DIR=/etc/nixos"), "{s}");
+        let out = std::process::Command::new("bash").arg("-c").arg("export NIXOS_DIR=/etc/nixos; NM_CMD='echo --flake \"$NIXOS_DIR#main\"'; bash -c \"$NM_CMD\"").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "--flake /etc/nixos#main");
         assert!(!s.contains("password"));
     }
 
@@ -553,6 +622,9 @@ mod tests {
             build_host: Some(t),
             after: None,
             after_even_on_failure: false,
+            after_local: None,
+            on_target: false,
+            allow_unfree_env: false,
         };
         let s = build_script(&req, Path::new("/home/u/nixos"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), None);
         assert!(s.contains("--build-host ") && s.contains("vincent@lg") && s.contains("NM_CMD='nixos-rebuild switch --flake \"$NIXOS_DIR#main\" --build-host "), "{s}");
@@ -570,7 +642,7 @@ mod tests {
     fn after_build_action_only_after_success() {
         let mut req = DeployRequest {
             path: "/w".into(), host: Some("main".into()), action: RebuildAction::Boot, upgrade: false, keep_configuration: Some(KeepConfiguration::Local), hardware: None,
-            skip_sync: false, password: "x".into(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: Some(crate::types::AfterBuild::Reboot), after_even_on_failure: false,
+            skip_sync: false, password: "x".into(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: Some(crate::types::AfterBuild::Reboot), after_even_on_failure: false, after_local: None, on_target: false, allow_unfree_env: false,
         };
         let s = build_script(&req, Path::new("/w"), ConfigKind::Flake, 1000, 100, Path::new("/tmp/nm-stop"), Some(Path::new("/home/u/.local/state/nixos-manager/logs/x.log")));
         let exit_at = s.find("if [ \"$RC\" -ne 0 ]; then exit \"$RC\"; fi").unwrap();
@@ -607,6 +679,9 @@ mod tests {
             target_sudo_password: None,
             after: None,
             after_even_on_failure: false,
+            after_local: None,
+            on_target: false,
+            allow_unfree_env: false,
         };
         let s = build_script(&req, Path::new("/w"), ConfigKind::Legacy, 1000, 100, Path::new("/tmp/nm-stop"), None);
         assert!(s.contains("rm -f \"$NIXOS_DIR/flake.lock\""));

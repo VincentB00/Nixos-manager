@@ -136,3 +136,37 @@ cargo run -p nixos-manager-daemon          # API + built UI on :7788
 cd ui && npm start                         # live UI on :4200
 cd ui && npm run build                     # then the daemon serves it
 ```
+
+## 2026-10-17: Monaco editor + comment out groups (Vincent's QoL requests)
+- `ui/src/app/shared/code-editor.component.ts` (`<app-code-editor>`): Monaco
+  (`monaco-editor@0.52.2`, ESM import, vs-dark, automaticLayout) with a
+  Monarch tokenizer for Nix (keywords, strings incl. `${}` interpolation and
+  `''` indented strings, paths, comments, `key =` highlighting). Used for the
+  whole-file Code view (file-view), the per-node "Edit as Nix code" editor
+  (node.component) and the new-file dialog. API: `[value]`, `(valueChange)`,
+  `height`, `language`, `insertAtCursor(text)` (the "Insert global value"
+  menus use it). No web worker is bundled (Angular's esbuild cannot resolve
+  monaco's worker URL); a no-op blob worker silences the console error and
+  Monaco runs its services on the main thread — fine for config files.
+  angular.json: `loader: {".ttf": "file"}` for the codicon font, budgets
+  raised, AND `node_modules/monaco-editor/min/vs/editor/editor.main.css` in
+  `styles` — the CSS that monaco's ESM modules import from JS is emitted as
+  a chunk the Angular bundler never injects (first version: find widget
+  floating outside the editor, broken icon glyphs, no line numbers). Keep
+  the full `monaco-editor` import (`editor.api` drops find/fold/etc.).
+  Debug hook: the host div exposes `__monaco` (used by screenshot scripts).
+  `shared/insert-at-cursor.ts` is no longer used by those pages.
+- Form editor: "Comment out" now also on bindings/groups (node.component
+  `isBinding`). Backend: `edit::toggle_edit` comments every line of a
+  multi-line span with `# ` at the GROUP's indentation (inner indentation
+  kept after the marker, empty lines → `#`), and uncomments blocks (strip
+  after indentation, bare `#` → empty line) — exact round trip. Parser:
+  `nixparse::comment_groups` collects runs of consecutive `#` lines inside a
+  set; `entries()` greedily finds the longest run that parses as exactly one
+  binding (`{ text }`) and shows it as a disabled node (label = key, kind by
+  value, `source` = the block) — so a commented-out group shows as
+  "GROUP · commented out (N lines)" with Enable and the block preview; prose
+  comment lines in between are ignored. Leading code-like comments are no
+  longer attached as the entry's comment text (`leading_comments(.., true)`).
+  Tests: `comment_out_a_group_and_restore_it`,
+  `commented_out_group_and_setting_show_as_disabled`.

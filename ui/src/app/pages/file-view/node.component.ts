@@ -10,11 +10,11 @@ import { MatMenuModule } from '@angular/material/menu';
 import type { EditOp, Node, NodeKind, ScalarValue } from '../../api/generated';
 import { inject } from '@angular/core';
 import { WorkspaceService } from '../../core/workspace.service';
-import { insertAtCursor } from '../../shared/insert-at-cursor';
+import { CodeEditorComponent } from '../../shared/code-editor.component';
 
 @Component({
   selector: 'app-node',
-  imports: [FormsModule, NgTemplateOutlet, MatButtonModule, MatIconModule, MatSlideToggleModule, MatTooltipModule, MatMenuModule],
+  imports: [FormsModule, NgTemplateOutlet, MatButtonModule, MatIconModule, MatSlideToggleModule, MatTooltipModule, MatMenuModule, CodeEditorComponent],
   styles: [`
     :host { display: block; }
     .node { border-left: 2px solid transparent; padding: 2px 0 2px 8px; margin: 2px 0; }
@@ -52,7 +52,11 @@ import { insertAtCursor } from '../../shared/insert-at-cursor';
         @if (collapsible()) { <span class="count">{{ node().children.length }} {{ node().kind === 'list' ? 'items' : 'settings' }}</span> }
 
         @if (node().disabled) {
-          <span class="mono muted">{{ node().value }}</span>
+          @if ((node().source ?? '').includes('\n')) {
+            <span class="muted" style="font-size:.85em">commented out ({{ (node().source ?? '').split('\n').length }} lines)</span>
+          } @else {
+            <span class="mono muted">{{ node().value }}</span>
+          }
           <button mat-stroked-button (click)="emit({ op: 'toggle_disabled', node_id: node().id })"><mat-icon>visibility</mat-icon> Enable</button>
         } @else if (!codeMode()) {
           @switch (node().kind) {
@@ -81,8 +85,8 @@ import { insertAtCursor } from '../../shared/insert-at-cursor';
           @if (!node().disabled && node().kind !== 'inherit') {
             <button mat-icon-button matTooltip="Edit as Nix code" (click)="startCode()"><mat-icon>code</mat-icon></button>
           }
-          @if (isListItem() && !node().disabled) {
-            <button mat-icon-button matTooltip="Comment out (keep but disable)" (click)="emit({ op: 'toggle_disabled', node_id: node().id })"><mat-icon>visibility_off</mat-icon></button>
+          @if ((isListItem() || isBinding()) && !node().disabled) {
+            <button mat-icon-button [matTooltip]="node().kind === 'attrset' ? 'Comment out this whole group (keep it, but disable every setting in it)' : 'Comment out (keep but disable)'" (click)="emit({ op: 'toggle_disabled', node_id: node().id })"><mat-icon>visibility_off</mat-icon></button>
           }
           @if (removable()) {
             <button mat-icon-button matTooltip="Remove" (click)="remove()"><mat-icon>delete</mat-icon></button>
@@ -90,6 +94,9 @@ import { insertAtCursor } from '../../shared/insert-at-cursor';
         </span>
       </div>
 
+      @if (node().disabled && (node().source ?? '').includes('\n')) {
+        <pre class="code muted">{{ node().source }}</pre>
+      }
       @if (codeMode()) {
         @if (vars().length) {
           <div class="flex" style="margin: 4px 0">
@@ -105,7 +112,7 @@ import { insertAtCursor } from '../../shared/insert-at-cursor';
             </mat-menu>
           </div>
         }
-        <textarea #codeArea class="code" [(ngModel)]="codeText" spellcheck="false"></textarea>
+        <app-code-editor #codeArea [value]="codeText" (valueChange)="codeText = $event" (save)="saveCode()" height="180px" />
         <div class="flex">
           <button mat-flat-button (click)="saveCode()">Save</button>
           <button mat-button (click)="codeMode.set(false)">Cancel</button>
@@ -210,13 +217,12 @@ export class NodeComponent {
   knownSet(name: string) { return this.sets().some(x => x.name === name); }
   vars = computed(() => this.ws.flakeVars());
 
-  private codeArea = viewChild<ElementRef<HTMLTextAreaElement>>('codeArea');
+  private codeArea = viewChild<CodeEditorComponent>('codeArea');
   interp(name: string) { return '$' + '{vars.' + name + '}'; }
   insertIntoCode(text: string) {
-    const el = this.codeArea()?.nativeElement;
-    if (!el) { this.codeText += text; return; }
-    this.codeText = insertAtCursor(el, text);
+    this.codeArea()?.insertAtCursor(text);
   }
+
 
   /** Replace the whole value with a reference to a flake global. */
   useVar(name: string) {
@@ -232,6 +238,7 @@ export class NodeComponent {
 
   collapsible = computed(() => ['attrset', 'list', 'letin', 'concat', 'merge'].includes(this.node().kind) && !this.node().disabled);
   isListItem = computed(() => this.parentKind() === 'list');
+  isBinding = computed(() => this.parentKind() === 'attrset' && !!this.node().label && this.node().kind !== 'inherit');
   removable = computed(() => (this.parentKind() === 'list' || this.parentKind() === 'attrset') && !this.node().disabled);
 
   kindLabel() {

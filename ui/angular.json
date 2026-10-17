@@ -31,17 +31,21 @@
               }
             ],
             "styles": [
-              "src/styles.scss"
+              "src/styles.scss",
+              "node_modules/monaco-editor/min/vs/editor/editor.main.css"
             ],
-            "outputPath": "dist/nixos-manager-ui"
+            "outputPath": "dist/nixos-manager-ui",
+            "loader": {
+              ".ttf": "file"
+            }
           },
           "configurations": {
             "production": {
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "1.5MB",
-                  "maximumError": "3MB"
+                  "maximumWarning": "6mb",
+                  "maximumError": "12mb"
                 },
                 {
                   "type": "anyComponentStyle",

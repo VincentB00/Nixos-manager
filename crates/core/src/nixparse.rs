@@ -423,7 +423,8 @@ impl<'a> TreeBuilder<'a> {
                 ast::Entry::AttrpathValue(av) => {
                     let key = av.attrpath().map(|p| attrpath_text(&p)).unwrap_or_default();
                     let erange = av.syntax().text_range();
-                    let comment = join_comments(leading_comments(av.syntax(), false), trailing_comment(av.syntax()));
+                    // code-like leading comments are shown as disabled settings instead (below)
+                    let comment = join_comments(leading_comments(av.syntax(), true), trailing_comment(av.syntax()));
                     match av.value() {
                         Some(v) => out.push(self.convert(&v, Some(key), Some(erange), comment)),
                         None => {
@@ -445,8 +446,132 @@ impl<'a> TreeBuilder<'a> {
                 }
             }
         }
+        // Commented-out settings ("# key = value;" or a whole "# key = {" … "# };"
+        // block on consecutive comment lines): shown as disabled, re-enabled
+        // with one click (EditOp::ToggleDisabled on the comment block).
+        for (_, _, lines) in comment_groups(set.syntax()) {
+            // Greedy: the longest run of consecutive comment lines that parses as
+            // exactly one setting becomes a disabled node; prose lines and
+            // unrelated settings around it are left alone.
+            let mut i = 0;
+            while i < lines.len() {
+                let mut found = None;
+                for j in (i..lines.len()).rev() {
+                    let range = TextRange::new(lines[i].0.start(), lines[j].0.end());
+                    let text = lines[i..=j].iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join("\n");
+                    if let Some(n) = self.disabled_binding(range, &text) {
+                        found = Some((j, n));
+                        break;
+                    }
+                }
+                match found {
+                    Some((j, n)) => {
+                        out.push(n);
+                        i = j + 1;
+                    }
+                    None => i += 1,
+                }
+            }
+        }
+        out.sort_by_key(|n| n.span.start);
         out
     }
+
+    fn disabled_binding(&self, range: TextRange, text: &str) -> Option<Node> {
+        if !text.contains('=') || text.trim().starts_with('{') {
+            return None;
+        }
+        let wrapped = format!("{{\n{text}\n}}");
+        let p = rnix::Root::parse(&wrapped);
+        if !p.errors().is_empty() {
+            return None;
+        }
+        let expr = p.tree().expr()?;
+        let ast::Expr::AttrSet(set) = expr else { return None };
+        let mut entries = set.entries();
+        let Some(ast::Entry::AttrpathValue(av)) = entries.next() else { return None };
+        if entries.next().is_some() {
+            return None;
+        }
+        let key = av.attrpath().map(|p| attrpath_text(&p))?;
+        let kind = match av.value() {
+            Some(ast::Expr::AttrSet(_)) => NodeKind::Attrset,
+            Some(ast::Expr::List(_)) => NodeKind::List,
+            Some(ast::Expr::Str(_)) => NodeKind::String,
+            Some(ast::Expr::Ident(ref i)) if matches!(i.syntax().text().to_string().as_str(), "true" | "false") => NodeKind::Bool,
+            Some(ast::Expr::Literal(_)) => NodeKind::Int,
+            _ => NodeKind::Code,
+        };
+        let mut n = self.base(kind, range, range);
+        n.label = Some(key);
+        n.value = Some(av.value().map(|v| v.syntax().text().to_string()).unwrap_or_default());
+        n.source = Some(text.to_string());
+        n.disabled = true;
+        Some(n)
+    }
+}
+
+/// Runs of consecutive `#` line comments directly inside `node` (separated by
+/// at most one newline), as (range covering the run, text with the `#`
+/// markers removed, lines joined by newlines).
+pub fn comment_groups(node: &SyntaxNode) -> Vec<(TextRange, String, Vec<(TextRange, String)>)> {
+    let mut groups = Vec::new();
+    let mut cur: Option<(TextRange, Vec<(TextRange, String)>)> = None;
+    let flush = |cur: &mut Option<(TextRange, Vec<(TextRange, String)>)>, groups: &mut Vec<(TextRange, String, Vec<(TextRange, String)>)>| {
+        if let Some((r, lines)) = cur.take() {
+            let text = lines.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join("\n");
+            groups.push((r, text, lines));
+        }
+    };
+    for el in node.children_with_tokens() {
+        match el {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::TOKEN_COMMENT && t.text().starts_with('#') => {
+                let line = (t.text_range(), strip_hash(t.text()));
+                match cur.as_mut() {
+                    Some((r, lines)) => {
+                        *r = TextRange::new(r.start(), t.text_range().end());
+                        lines.push(line);
+                    }
+                    None => cur = Some((t.text_range(), vec![line])),
+                }
+            }
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::TOKEN_WHITESPACE && t.text().matches('\n').count() <= 1 => {}
+            _ => flush(&mut cur, &mut groups),
+        }
+    }
+    flush(&mut cur, &mut groups);
+    groups
+}
+
+/// `# foo` → `foo`, `#foo` → `foo`, `#` → ``.
+pub fn strip_hash(line: &str) -> String {
+    let rest = line.strip_prefix('#').unwrap_or(line);
+    rest.strip_prefix(' ').unwrap_or(rest).to_string()
+}
+
+#[cfg(test)]
+mod disabled_binding_tests {
+    use super::*;
+
+    #[test]
+    fn commented_out_group_and_setting_show_as_disabled() {
+        let src = "{ config, pkgs, ... }: {\n  services.openssh.enable = true;\n  # services.printing = {\n  #   enable = true;\n  #   drivers = [ pkgs.gutenprint ];\n  # };\n  # networking.firewall.enable = false;\n  # just a note, not code\n  users.users.v.isNormalUser = true;\n}\n";
+        let v = analyze_file("t.nix", src.to_string());
+        let labels: Vec<(String, bool)> = v.root.children.iter().map(|c| (c.label.clone().unwrap_or_default(), c.disabled)).collect();
+        assert!(labels.contains(&("services.printing".to_string(), true)), "{labels:?}");
+        assert!(labels.contains(&("networking.firewall.enable".to_string(), true)), "{labels:?}");
+        assert!(labels.contains(&("services.openssh.enable".to_string(), false)));
+        assert!(!labels.iter().any(|(l, _)| l.contains("note")), "{labels:?}");
+        let grp = v.root.children.iter().find(|c| c.label.as_deref() == Some("services.printing")).unwrap();
+        assert_eq!(grp.kind, NodeKind::Attrset);
+        assert!(grp.source.as_deref().unwrap().contains("drivers = [ pkgs.gutenprint ];"));
+        // order follows the file
+        let idx = |l: &str| v.root.children.iter().position(|c| c.label.as_deref() == Some(l)).unwrap();
+        assert!(idx("services.openssh.enable") < idx("services.printing") && idx("services.printing") < idx("users.users.v.isNormalUser"));
+    }
+}
+
+impl<'a> TreeBuilder<'a> {
 
     fn list_items(&self, list: &ast::List) -> Vec<Node> {
         let mut items: Vec<(usize, Node)> = Vec::new();

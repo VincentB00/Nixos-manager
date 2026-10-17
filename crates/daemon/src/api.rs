@@ -528,6 +528,7 @@ async fn deploy_start(State(ctx): State<AppCtx>, Json(req): Json<DeployRequest>)
         return Err(CoreError::Invalid("sudo password is required".into()).into());
     }
     let title = match &req.target {
+        Some(t) if req.on_target => format!("nixos-rebuild {:?} on {} ({})", req.action, t.name, req.path),
         Some(t) => format!("nixos-rebuild {:?} → {} ({})", req.action, t.name, req.path),
         None => format!("nixos-rebuild {:?} ({})", req.action, req.path),
     };

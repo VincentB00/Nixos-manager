@@ -212,8 +212,178 @@ pub(crate) fn trust_snippet(target: &DeployTarget, grant: bool) -> String {
     }
 }
 
+/// Local wrapper for an on-target deployment: copy the staged working copy
+/// to a private temp dir on the target (rsync, or tar over ssh), relay a
+/// stop request as a stop file there, run the uploaded root script with
+/// `sudo -S` (password on ssh's stdin, never on a command line), and always
+/// remove the temp dir again (EXIT trap: success, failure, stop).
+pub fn on_target_wrapper(target: &DeployTarget, staged: &Path, remote_dir: &str, local_stop: &Path) -> String {
+    format!(
+        r#"set -uo pipefail
+T={t}
+D={d}
+SRC={src}
+NM_STOP={stop}
+SSH="ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20"
+NM_WATCH=""
+cleanup() {{
+  [ -n "$NM_WATCH" ] && kill "$NM_WATCH" 2>/dev/null
+  echo "[nixos-manager] removing the copy on the target ($D)..."
+  $SSH "$T" "rm -rf '$D' '$D.stop'" >/dev/null 2>&1 && echo "[nixos-manager] target temp folder removed" || echo "[nixos-manager] WARNING: could not remove $D on the target; remove it by hand"
+}}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+echo "[nixos-manager] copying the working copy to $T:$D ..."
+$SSH "$T" "rm -rf '$D' && mkdir -p '$D' && chmod 700 '$D'" || {{ echo "[nixos-manager] ERROR: cannot create $D on the target" >&2; exit 5; }}
+if command -v rsync >/dev/null 2>&1 && $SSH "$T" "command -v rsync >/dev/null 2>&1"; then
+  rsync -az --delete -e "$SSH" "$SRC"/ "$T:$D/" || {{ echo "[nixos-manager] ERROR: rsync to the target failed" >&2; exit 5; }}
+else
+  echo "[nixos-manager] rsync is not available on both sides; using tar over ssh"
+  tar -C "$SRC" -cf - . | $SSH "$T" "tar -C '$D' -xf -" || {{ echo "[nixos-manager] ERROR: copy to the target failed" >&2; exit 5; }}
+fi
+( while [ ! -f "$NM_STOP" ]; do sleep 1; done; $SSH "$T" "touch '$D.stop'" ) & NM_WATCH=$!
+echo "[nixos-manager] running the sync to /etc/nixos and nixos-rebuild on the target as root..."
+RC=0
+printf '%s\n' "${{NM_TARGET_PW:-}}" | $SSH "$T" "sudo -S -p '' bash '$D/.nixos-manager-deploy.sh'" || RC=$?
+exit $RC
+"#,
+        t = sh(&target.ssh_target),
+        d = sh(remote_dir),
+        src = sh(&staged.to_string_lossy()),
+        stop = sh(&local_stop.to_string_lossy())
+    )
+}
+
+/// "Build and activate on the target": everything happens over SSH on the
+/// target, with the same root script a local build uses (sync.sh mirror).
+pub async fn run_on_target(job: JobHandle, req: DeployRequest, target: DeployTarget) {
+    job.running().await;
+    job.uses_stop_file().await;
+    if req.after_local.is_some() && !req.password.is_empty() {
+        if let Err(e) = crate::deploy::check_sudo(&req.password).await {
+            job.failed(format!("your sudo password (for the action on this machine afterwards) was refused: {e}")).await;
+            return;
+        }
+        job.system("Your sudo password was accepted (used only to power off / reboot this machine afterwards).").await;
+    }
+    let workdir = std::path::PathBuf::from(&req.path);
+    let kind = match crate::discover::location_info(&workdir) {
+        Ok(l) => l.kind,
+        Err(e) => {
+            job.failed(e.to_string()).await;
+            return;
+        }
+    };
+    if kind == ConfigKind::Unknown {
+        job.failed("the working copy has neither flake.nix nor configuration.nix").await;
+        return;
+    }
+    {
+        let (_, user) = split_target(&target.ssh_target);
+        let user = user.unwrap_or_else(|| "root".into());
+        if !valid_unix_user(&user) {
+            job.failed(format!("'{user}' is not a plain unix user name; use user@host with a normal account")).await;
+            return;
+        }
+    }
+    job.system(format!("Build and activate on {}: the working copy is copied there, then the usual sync to /etc/nixos and nixos-rebuild run on the target as root.", target.ssh_target)).await;
+    if std::env::var("SSH_AUTH_SOCK").is_err() {
+        job.system("Note: no SSH agent is visible to the daemon; the SSH key for the target must have no passphrase.").await;
+    }
+    if crate::secrets::deploy_info(&workdir).present {
+        job.system("Note: managed secrets (secrets.age) are not installed on remote targets.").await;
+    }
+    let staged = match crate::validate::stage_plain_copy(&workdir) {
+        Ok(p) => p,
+        Err(e) => {
+            job.failed(format!("cannot stage a copy of the working folder: {e}")).await;
+            return;
+        }
+    };
+    let remote_dir = format!("/tmp/nixos-manager-deploy-{}", &job.id[..8.min(job.id.len())]);
+    // the root script that runs on the target
+    let mut r = req.clone();
+    r.build_host = None;
+    r.target = None;
+    r.keep_configuration = Some(crate::types::KeepConfiguration::Local);
+    r.skip_sync = false;
+    let mut env = crate::deploy::ScriptEnv::default();
+    if kind == ConfigKind::Flake {
+        env.exports.push(("NIX_CONFIG".into(), "experimental-features = nix-command flakes".into()));
+    }
+    if req.allow_unfree_env {
+        env.exports.push(("NIXPKGS_ALLOW_UNFREE".into(), "1".into()));
+        env.impure = true;
+        job.system("Flakes and unfree packages are allowed through the environment for this build (NIX_CONFIG, NIXPKGS_ALLOW_UNFREE=1, --impure for flakes).").await;
+    }
+    let log_file = job.log_file().await;
+    let remote_stop = format!("{remote_dir}.stop");
+    let script = crate::deploy::build_script_with(&r, Path::new(&remote_dir), kind, 0, 0, Path::new(&remote_stop), log_file.as_deref(), &env);
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let p = staged.join(".nixos-manager-deploy.sh");
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o700).open(&p).and_then(|mut f| f.write_all(script.as_bytes())) {
+            Ok(()) => {}
+            Err(e) => {
+                job.failed(format!("cannot write the deploy script: {e}")).await;
+                let _ = std::fs::remove_dir_all(&staged);
+                return;
+            }
+        }
+    }
+    let local_stop = job.stop_file().await;
+    let wrapper = on_target_wrapper(&target, &staged, &remote_dir, &local_stop);
+    let sender = job.line_sender();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen_w = seen.clone();
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.arg("-c").arg(&wrapper).current_dir(&staged);
+    if let Some(pw) = req.target_sudo_password.as_deref().filter(|p| !p.is_empty()) {
+        cmd.env("NM_TARGET_PW", pw);
+    }
+    let result = process::stream_cmd_job(&job, cmd, None, move |is_err, line| {
+        if line.contains("incorrect password attempt") || line.contains("a password is required") || line.contains("Permission denied") || line.contains("experimental Nix feature") || line.contains("unfree") {
+            seen_w.lock().unwrap().push(line.clone());
+        }
+        let _ = sender.send(LogLine { stream: if is_err { LogStream::Stderr } else { LogStream::Stdout }, text: line });
+    })
+    .await;
+    let lines = seen.lock().unwrap().clone();
+    let (_, user) = split_target(&target.ssh_target);
+    let user = user.unwrap_or_else(|| "root".into());
+    if lines.iter().any(|l| l.contains("incorrect password attempt") || l.contains("a password is required")) {
+        job.system(format!("Why it failed: sudo on the target rejected the password for {user} (or none was given). Enter the target's sudo password in the build dialog.")).await;
+    } else if lines.iter().any(|l| l.contains("Permission denied")) {
+        job.system("Why it failed: SSH login was refused. Use \"Set up key access\" on the Remote page for this target.").await;
+    } else if lines.iter().any(|l| l.contains("experimental Nix feature")) {
+        job.system("Why it failed: flakes are not enabled on the target. Tick \"allow flakes and unfree through the environment\" in the build dialog for this deployment.").await;
+    } else if lines.iter().any(|l| l.contains("unfree")) {
+        job.system("Why it failed: an unfree package is refused on the target. Tick \"allow flakes and unfree through the environment\" in the build dialog, or set nixpkgs.config.allowUnfree in the configuration.").await;
+    }
+    let _ = std::fs::remove_dir_all(&staged);
+    if let Ok(code) = result {
+        crate::deploy::local_after_action(&job, req.after_local, req.after_even_on_failure, code, &req.password).await;
+    }
+    match result {
+        Ok(0) => job.succeeded().await,
+        Ok(130) => job.failed("stopped by the user").await,
+        Ok(5) => job.failed("could not copy the working copy to the target; see the log").await,
+        Ok(3) => job.failed("configuration.nix conflict on the target; see the log").await,
+        Ok(code) => job.failed(format!("deployment on the target exited with status {code}; see the log")).await,
+        Err(e) => job.failed(e.to_string()).await,
+    }
+}
+
 pub async fn run_remote(job: JobHandle, req: DeployRequest, target: DeployTarget) {
     job.running().await;
+    if req.after_local.is_some() && !req.password.is_empty() {
+        if let Err(e) = crate::deploy::check_sudo(&req.password).await {
+            job.failed(format!("your sudo password (for the action on this machine afterwards) was refused: {e}")).await;
+            return;
+        }
+        job.system("Your sudo password was accepted (used only to power off / reboot this machine afterwards).").await;
+    }
     let workdir = std::path::PathBuf::from(&req.path);
     let kind = match crate::discover::location_info(&workdir) {
         Ok(l) => l.kind,
@@ -340,6 +510,9 @@ pub async fn run_remote(job: JobHandle, req: DeployRequest, target: DeployTarget
     }
     // The lock is deliberately NOT written back to the working folder.
     let _ = std::fs::remove_dir_all(&staged);
+    if let Ok(code) = result {
+        crate::deploy::local_after_action(&job, req.after_local, req.after_even_on_failure, code, &req.password).await;
+    }
     match result {
         Ok(0) => job.succeeded().await,
         Ok(9) => job.failed("could not grant temporary trust on the target; see the log").await,
@@ -510,6 +683,9 @@ mod tests {
             build_host: None,
             after: None,
             after_even_on_failure: false,
+            after_local: None,
+            on_target: false,
+            allow_unfree_env: false,
         };
         let t = DeployTarget { name: "server".into(), ssh_target: "vincent@cyber-server-1".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true };
         let s = remote_script(&req, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
@@ -591,6 +767,26 @@ mod tests {
     }
 
     #[test]
+    fn on_target_wrapper_and_script_shape() {
+        let t = DeployTarget { name: "lap".into(), ssh_target: "vincent@lg".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true };
+        let w = on_target_wrapper(&t, Path::new("/tmp/staged"), "/tmp/nixos-manager-deploy-abcd1234", Path::new("/tmp/nm-stop"));
+        assert!(w.contains("trap cleanup EXIT") && w.contains("rm -rf '$D' '$D.stop'") && w.contains("rsync -az --delete") && w.contains("tar -C \"$SRC\" -cf - ."), "{w}");
+        assert!(w.contains("printf '%s\\n' \"${NM_TARGET_PW:-}\" | $SSH \"$T\" \"sudo -S -p '' bash '$D/.nixos-manager-deploy.sh'\""), "{w}");
+        assert!(!w.contains("secret"));
+        let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(&w).status().unwrap();
+        assert!(st.success(), "wrapper must parse");
+        let mut req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: false, keep_configuration: Some(crate::types::KeepConfiguration::Local), hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: None, after_even_on_failure: false, after_local: None, on_target: true, allow_unfree_env: true };
+        let env = crate::deploy::ScriptEnv { exports: vec![("NIX_CONFIG".into(), "experimental-features = nix-command flakes".into()), ("NIXPKGS_ALLOW_UNFREE".into(), "1".into())], impure: true };
+        let sc = crate::deploy::build_script_with(&req, Path::new("/tmp/nixos-manager-deploy-abcd1234"), ConfigKind::Flake, 0, 0, Path::new("/tmp/nixos-manager-deploy-abcd1234.stop"), None, &env);
+        assert!(sc.contains("export NIX_CONFIG='experimental-features = nix-command flakes'") && sc.contains("export NIXPKGS_ALLOW_UNFREE='1'"), "{sc}");
+        assert!(sc.contains("--flake \"$NIXOS_DIR#main\" --impure 2>&1"), "{sc}");
+        assert!(sc.contains("rm -rf \"${NIXOS_DIR:?}\"/*") && !sc.contains("temporary trust"), "{sc}");
+        req.allow_unfree_env = false;
+        let sc2 = crate::deploy::build_script_with(&req, Path::new("/tmp/x"), ConfigKind::Legacy, 0, 0, Path::new("/tmp/x.stop"), None, &crate::deploy::ScriptEnv::default());
+        assert!(!sc2.contains("--impure") && !sc2.contains("export NIX_CONFIG") && !sc2.contains("NIXPKGS_ALLOW_UNFREE"));
+    }
+
+    #[test]
     fn target_hardware_script_parses() {
         let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(target_hardware_script()).status().unwrap();
         assert!(st.success());
@@ -605,7 +801,7 @@ mod tests {
             let out = std::process::Command::new("bash").arg("-n").arg(&f).output().expect("bash");
             assert!(out.status.success(), "{label} does not parse:\n{}\n---\n{text}", String::from_utf8_lossy(&out.stderr));
         };
-        let req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: true, keep_configuration: None, hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: None, after_even_on_failure: false };
+        let req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: true, keep_configuration: None, hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: None, after_even_on_failure: false, after_local: None, on_target: false, allow_unfree_env: false };
         let t = DeployTarget { name: "x".into(), ssh_target: "vincent@h".into(), flake_host: None, build_host: Some("b".into()), use_remote_sudo: true };
         check("local deploy script", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop")));
         check("local deploy script (legacy)", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Legacy, "--use-remote-sudo", Path::new("/tmp/nm-stop")));

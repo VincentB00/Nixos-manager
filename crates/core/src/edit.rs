@@ -337,11 +337,60 @@ pub(crate) fn remove_item_edit(source: &str, start: usize, end: usize) -> Edit {
 
 fn toggle_edit(source: &str, start: usize, end: usize) -> Result<Edit> {
     let text = &source[start..end];
-    if let Some(rest) = text.strip_prefix('#') {
-        // Uncomment: drop '#' and a single following space.
-        let inner = rest.strip_prefix(' ').unwrap_or(rest);
-        validate_expr(inner.trim())?;
+    if text.starts_with('#') {
+        // Uncomment every line of the block: drop '#' (and one space) after the
+        // indentation; a bare '#' marker restores an empty line.
+        let inner: Vec<String> = text.lines().map(|l| {
+            let ws_len = l.len() - l.trim_start().len();
+            let (ws, body) = l.split_at(ws_len);
+            let rest = crate::nixparse::strip_hash(body);
+            if rest.is_empty() { String::new() } else { format!("{ws}{rest}") }
+        }).collect();
+        let inner = inner.join("\n");
+        let trimmed = inner.trim();
+        if validate_expr(trimmed).is_err() {
+            // a binding ("key = value;") or a group: must parse inside a set
+            let wrapped = format!("{{\n{trimmed}\n}}");
+            let p = rnix::Root::parse(&wrapped);
+            if !p.errors().is_empty() {
+                return Err(CoreError::Invalid("the commented-out text is not valid Nix any more; edit the file as code instead".into()));
+            }
+        }
         return Ok(Edit { range: TextRange::new((start as u32).into(), (end as u32).into()), text: inner.trim_end().to_string() });
+    }
+    if text.contains('\n') {
+        // A group spanning several lines: comment every line, keeping the indentation.
+        let ls = line_start(source, start);
+        if !source[ls..start].trim().is_empty() {
+            return Err(CoreError::Invalid("only settings that start on their own line can be commented out".into()));
+        }
+        // The marker goes at the group's own indentation on every line, so the
+        // inner indentation stays visible after "# " (and round-trips exactly).
+        let base = &source[ls..start];
+        let mut out = String::new();
+        for (i, l) in text.split('\n').enumerate() {
+            if i == 0 {
+                out.push_str("# ");
+                out.push_str(l);
+                continue;
+            }
+            out.push('\n');
+            if l.trim().is_empty() {
+                out.push_str(base);
+                out.push('#');
+            } else if let Some(rest) = l.strip_prefix(base) {
+                out.push_str(base);
+                out.push_str("# ");
+                out.push_str(rest);
+            } else {
+                let ws_len = l.len() - l.trim_start().len();
+                let (ws, body) = l.split_at(ws_len);
+                out.push_str(ws);
+                out.push_str("# ");
+                out.push_str(body);
+            }
+        }
+        return Ok(Edit { range: TextRange::new((start as u32).into(), (end as u32).into()), text: out });
     }
     if !alone_on_line(source, start, end) {
         return Err(CoreError::Invalid("only items on their own line can be commented out".into()));
@@ -505,6 +554,29 @@ mod tests {
         let enabled = &v2.root.children[0].children[0];
         let out2 = apply_to_source(&out, &EditOp::ToggleDisabled { node_id: enabled.id.clone() }).unwrap();
         assert!(out2.contains("    # ./a.nix\n    ./b.nix\n"), "{out2}");
+    }
+
+    #[test]
+    fn comment_out_a_group_and_restore_it() {
+        let src = "{ config, pkgs, ... }: {\n  services.printing = {\n    enable = true;\n\n    drivers = [ pkgs.gutenprint ];\n  };\n  users.users.v.isNormalUser = true;\n}\n";
+        let v = analyze_file("t.nix", src.to_string());
+        let grp = v.root.children.iter().find(|c| c.label.as_deref() == Some("services.printing")).unwrap();
+        let out = apply_to_source(src, &EditOp::ToggleDisabled { node_id: grp.id.clone() }).unwrap();
+        assert!(out.contains("  # services.printing = {\n  #   enable = true;\n  #\n  #   drivers = [ pkgs.gutenprint ];\n  # };\n"), "{out}");
+        let v2 = analyze_file("t.nix", out.clone());
+        let dis = v2.root.children.iter().find(|c| c.label.as_deref() == Some("services.printing")).unwrap();
+        assert!(dis.disabled && dis.kind == NodeKind::Attrset);
+        let back = apply_to_source(&out, &EditOp::ToggleDisabled { node_id: dis.id.clone() }).unwrap();
+        assert_eq!(back, src, "round trip must restore the file exactly");
+        // a single-line setting too
+        let v3 = analyze_file("t.nix", src.to_string());
+        let one = v3.root.children.iter().find(|c| c.label.as_deref() == Some("users.users.v.isNormalUser")).unwrap();
+        let out3 = apply_to_source(src, &EditOp::ToggleDisabled { node_id: one.id.clone() }).unwrap();
+        assert!(out3.contains("  # users.users.v.isNormalUser = true;\n"), "{out3}");
+        let v4 = analyze_file("t.nix", out3.clone());
+        let d4 = v4.root.children.iter().find(|c| c.label.as_deref() == Some("users.users.v.isNormalUser")).unwrap();
+        assert!(d4.disabled && d4.kind == NodeKind::Bool);
+        assert_eq!(apply_to_source(&out3, &EditOp::ToggleDisabled { node_id: d4.id.clone() }).unwrap(), src);
     }
 
     #[test]

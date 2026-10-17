@@ -634,6 +634,21 @@ pub struct DeployRequest {
     /// Do the `after` action even when the build fails (never after a manual stop).
     #[serde(default)]
     pub after_even_on_failure: bool,
+    /// With `target`: what to do with THIS machine after the deployment
+    /// (`after` applies to the target then). Uses logind (`systemctl
+    /// poweroff|reboot`), falling back to sudo with `password` when given.
+    #[serde(default)]
+    pub after_local: Option<AfterBuild>,
+    /// With `target`: copy the working copy to the target over SSH and run
+    /// the normal sync + nixos-rebuild THERE (instead of building here and
+    /// sending the result). Needs sudo on the target, no nix trust.
+    #[serde(default)]
+    pub on_target: bool,
+    /// On-target mode: export NIX_CONFIG (flakes) and NIXPKGS_ALLOW_UNFREE=1
+    /// (with --impure for flakes) so a target whose configuration does not
+    /// enable them yet can still build.
+    #[serde(default)]
+    pub allow_unfree_env: bool,
     /// sudo password of the SSH user on the target. Used for the temporary
     /// nix trust (only if the user is not trusted) and for activation; not
     /// needed when the user is root or has passwordless sudo there.

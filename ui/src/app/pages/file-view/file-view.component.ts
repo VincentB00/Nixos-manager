@@ -14,12 +14,12 @@ import { MatDialog } from '@angular/material/dialog';
 import { WizardDialogComponent, WizardData } from '../wizard/wizard-dialog.component';
 import { OrganizeDialogComponent } from './organize-dialog.component';
 import { MatMenuModule } from '@angular/material/menu';
-import { insertAtCursor } from '../../shared/insert-at-cursor';
+import { CodeEditorComponent } from '../../shared/code-editor.component';
 import type { EditOp, NixFileView } from '../../api/generated';
 
 @Component({
   selector: 'app-file-view',
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatProgressBarModule, MatSnackBarModule, MatTooltipModule, MatButtonToggleModule, MatMenuModule, NodeComponent],
+  imports: [FormsModule, MatButtonModule, MatIconModule, MatProgressBarModule, MatSnackBarModule, MatTooltipModule, MatButtonToggleModule, MatMenuModule, NodeComponent, CodeEditorComponent],
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
     h2 { margin: 0; font-weight: 400; }
@@ -97,11 +97,11 @@ import type { EditOp, NixFileView } from '../../api/generated';
             @if (!v.args.includes('vars') && v.args.length) { <span class="muted hint">This module does not receive <span class="mono">vars</span> yet; it is added when you save a file that uses it.</span> }
           </div>
         }
-        <textarea #wholeArea class="whole" [(ngModel)]="codeText" spellcheck="false"></textarea>
+        <app-code-editor #wholeArea [value]="codeText" (valueChange)="codeText = $event" (save)="codeText !== v.source && saveWhole()" [language]="isNix() ? 'nix' : 'plaintext'" height="calc(100vh - 290px)" />
         <div class="flex" style="margin-top:8px">
           <button mat-flat-button (click)="saveWhole()" [disabled]="codeText === v.source"><mat-icon>save</mat-icon> Save file</button>
           <button mat-button (click)="codeText = v.source" [disabled]="codeText === v.source">Revert</button>
-          <span class="muted hint">{{ isNix() ? 'The file is checked for syntax errors before it is written.' : 'Saved as-is.' }}</span>
+          <span class="muted hint">{{ isNix() ? 'The file is checked for syntax errors before it is written.' : 'Saved as-is.' }} Ctrl+S saves too.</span>
         </div>
       }
     } @else if (error()) {
@@ -235,13 +235,12 @@ export class FileViewComponent {
     proceed();
   }
 
-  private wholeArea = viewChild<ElementRef<HTMLTextAreaElement>>('wholeArea');
+  private wholeArea = viewChild<CodeEditorComponent>('wholeArea');
   interp(name: string) { return '$' + '{vars.' + name + '}'; }
   insertIntoCode(text: string) {
-    const el = this.wholeArea()?.nativeElement;
-    if (!el) { this.codeText += text; return; }
-    this.codeText = insertAtCursor(el, text);
+    this.wholeArea()?.insertAtCursor(text);
   }
+
 
   saveWhole() {
     this.apply({ op: 'replace_file', source: this.codeText });

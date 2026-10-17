@@ -292,3 +292,47 @@ Jobs page, so the log can be read after the reboot.
   (exit N)"` for any non-zero exit EXCEPT 130 (manual Stop: the user is
   there). Covers failures in the sync phase too (set -e → trap). Verified
   with fakes: failure → shutdown called, success → called, stop → not called.
+
+## Third mode: build AND activate on the target (2026-10-16, Vincent)
+`DeployRequest.on_target = true` (+ `allow_unfree_env`). `remote::run_on_target`:
+stage plain copy (flake.lock skipped as always) → write the LOCAL root
+script (`deploy::build_script_with`, i.e. the sync.sh mirror: preserve
+/etc/nixos/flake.lock, copy /etc/nixos/hardware-configuration.nix over the
+working copy unless hardware=workspace, rm -rf /etc/nixos/*, cp, restore
+lock, stoppable nixos-rebuild, after-action) into
+`staged/.nixos-manager-deploy.sh` (0700; dotfile so `cp -r $WORKDIR/*`
+never copies it into /etc/nixos) → local wrapper `on_target_wrapper`:
+`rsync -az --delete -e "$SSH"` (tar over ssh fallback) to
+`/tmp/nixos-manager-deploy-<id8>` on the target, a background watcher
+relays the local stop file as `<dir>.stop` on the target (the uploaded
+script polls that path), then `printf pw | ssh T "sudo -S -p '' bash
+<dir>/.nixos-manager-deploy.sh"` (password on ssh stdin, never argv).
+**Cleanup always** (Vincent asked explicitly): `trap cleanup EXIT` +
+`trap 'exit 143' TERM INT` → `ssh T rm -rf <dir> <dir>.stop` on success,
+failure and stop. ScriptEnv: flake → `export NIX_CONFIG='experimental-
+features = nix-command flakes'`; allow_unfree_env → `NIXPKGS_ALLOW_UNFREE=1`
++ `--impure` on the flake rebuild (env var only counts with --impure);
+legacy configs just get the env var. keep_configuration forced to Local
+(working copy wins), build_host cleared, no nix trust needed (root there).
+Password rule in the dialog: sudo password unless root or passwordless
+sudo (`onTargetNeedsPassword`). Hints for sudo/ssh/flakes/unfree failures.
+Job title "nixos-rebuild Switch on <target>". Fakes for e2e: fake ssh runs
+single-arg commands via `bash -c`, fake sudo bind-mounts fake /root AND a
+fake /etc/nixos (unshare -rm) so the real sync script runs end to end.
+- Bug caught by the on-target e2e (2026-10-16): the stop wrapper runs the
+  rebuild in a CHILD bash (`setsid bash -c "$NM_CMD"`), so unexported
+  script variables are empty there: `--flake "$NIXOS_DIR#main"` became
+  `--flake "#main"`. Local builds since the Stop feature would have been
+  broken. Fix: `export NIXOS_DIR` / `export WORKDIR` in build_script (+ a
+  test that evaluates the expansion through a child bash). Rule: anything
+  referenced inside NM_CMD must be exported or literal.
+- Target deployments: second selector "After the deployment, this machine"
+  (`DeployRequest.after_local`; `after` keeps acting on the target).
+  `deploy::local_after_action` (runs as the daemon user, after the job's
+  script finished): detached `setsid bash -c 'sleep 5; systemctl
+  --no-ask-password poweroff|reboot || printf pw | sudo -S shutdown …'`
+  — logind first (works for an active desktop session via polkit), sudo
+  fallback with the optional local password (`password` field, validated
+  with check_sudo at job start when given). Respects "also on failure";
+  never after a manual stop (130). The dialog shows the optional local
+  sudo password field only when a local action is chosen.

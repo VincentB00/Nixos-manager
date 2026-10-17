@@ -44,7 +44,13 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
             @for (t of p.targets; track t.name) { <mat-option [value]="t.name">{{ t.name }} <span class="mono muted">{{ t.ssh_target }}</span></mat-option> }
           </mat-select>
           <mat-hint>Remote targets are managed on the Remote page.</mat-hint>
-        </mat-form-field>        @if (!target() && p.targets.length) {
+        </mat-form-field>
+        @if (target()) {
+          <mat-radio-group [(ngModel)]="onTarget" style="display:flex; flex-direction:column; gap:2px; margin:4px 0 8px">
+            <mat-radio-button [value]="false">Build here, send the result to the target</mat-radio-button>
+            <mat-radio-button [value]="true">Build and activate on the target (copy the working copy there over SSH, then sync to its /etc/nixos and rebuild there)</mat-radio-button>
+          </mat-radio-group>
+        }        @if (!target() && p.targets.length) {
           <mat-form-field appearance="outline" style="width:100%">
             <mat-label>Build on</mat-label>
             <mat-select [ngModel]="buildHostName" (ngModelChange)="selectBuildHost($event)">
@@ -73,6 +79,41 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
 
 
         @if (target(); as t) {
+          @if (onTarget) {
+            <div class="note"><mat-icon>dns</mat-icon>
+              <div>Build and activate on <b>{{ t.name }}</b> (<span class="mono">{{ t.ssh_target }}</span>), entirely over SSH:
+                <ol class="steps">
+                  <li>Copy the working copy to a private temp folder on the target (rsync, or tar over ssh)</li>
+                  <li>On the target, as root: preserve its <code>/etc/nixos/flake.lock</code>{{ upgrade ? ' (not with upgrade)' : '' }}, {{ useWorkspaceHardware ? 'keep the hardware-configuration.nix from the working copy' : 'copy its own hardware-configuration.nix over the one from the working copy' }}, clear /etc/nixos and copy the working copy there</li>
+                  <li>Run <code>nixos-rebuild {{ action }}</code> there{{ p.kind === 'flake' ? ' --flake /etc/nixos#' + (host || '') : '' }}{{ allowUnfreeEnv && p.kind === 'flake' ? ' --impure' : '' }}</li>
+                  <li>Remove the temp folder on the target (always, also after a failure or a stop)</li>
+                </ol>
+                No nix trust is needed (everything runs as root there); only sudo on the target. Nothing is built on this machine.
+                @if (checking()) { <div style="margin-top:6px"><mat-progress-bar mode="indeterminate" /></div> }
+                @else if (check(); as c) {
+                  @if (!c.reachable) {
+                    <div class="warning-box" style="margin-top:6px"><mat-icon>warning</mat-icon><span>Could not reach the target over SSH{{ c.message ? ': ' + c.message : '' }}. Use "Set up key access" or "Test connection" on the Remote page.</span></div>
+                  } @else {
+                    <div style="margin-top:6px">Target: <b>{{ c.hostname ?? t.ssh_target }}</b>{{ c.nixos_version ? ' · NixOS ' + c.nixos_version : '' }} · passwordless sudo: <b>{{ c.is_root ? 'n/a (root)' : c.passwordless_sudo === true ? 'yes' : c.passwordless_sudo === false ? 'no' : 'unknown' }}</b></div>
+                    @if (onTargetNeedsPassword()) {
+                      <div class="warning-box" style="margin-top:6px"><mat-icon>key</mat-icon><span>Enter the target's sudo password for <span class="mono">{{ c.user }}</span> below; it is sent over SSH for this job only and never stored.</span></div>
+                    }
+                  }
+                }
+                <mat-checkbox [(ngModel)]="allowUnfreeEnv" style="margin-top:6px">Allow flakes and unfree packages through the environment for this build</mat-checkbox>
+                <div class="muted" style="font-size:.85em; margin-left:30px">For a target whose current configuration does not enable flakes or allowUnfree yet: sets NIX_CONFIG and NIXPKGS_ALLOW_UNFREE=1 (with --impure for flakes) just for this command. Harmless when they are already enabled.</div>
+                <mat-checkbox [(ngModel)]="useWorkspaceHardware" style="margin-top:6px">Use the working copy's <span class="mono">{{ p.hardware.rel_path }}</span> instead of the target's /etc/nixos/hardware-configuration.nix</mat-checkbox>
+                @if (useWorkspaceHardware) {
+                  <div class="warning-box" style="margin-top:4px"><mat-icon>warning</mat-icon><span>Make sure it describes the <b>target's</b> disks: wrong UUIDs can leave it unable to boot.</span></div>
+                }
+                @if (keyManaged(t)) {
+                  <div style="margin-top:4px">Logs in with the key set up by this app (no passphrase needed).</div>
+                } @else if (!p.ssh_agent) {
+                  <div class="warning-box" style="margin-top:6px"><mat-icon>warning</mat-icon><span>This target was not set up with "Set up key access", and no SSH agent is visible to the app, so a key with a passphrase cannot be used.</span></div>
+                }
+              </div>
+            </div>
+          } @else {
           <div class="note"><mat-icon>lan</mat-icon>
             <div>Build here, activate on <b>{{ t.name }}</b> (<span class="mono">{{ t.ssh_target }}</span>):
               <ol class="steps">
@@ -118,6 +159,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
               @if (p.secrets.present) { <div style="margin-top:4px">Managed secrets are not installed on remote targets.</div> }
             </div>
           </div>
+          }
         } @else {
         <div class="note"><mat-icon>info</mat-icon>
           <div>This runs the same steps as <code>sync.sh</code> followed by <code>nixos-rebuild</code>, as root:
@@ -162,14 +204,14 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
             <input matInput type="password" [(ngModel)]="targetSudoPassword" autocomplete="off" />
           </mat-form-field>
         }
-        @if (target() && check()?.needs_sudo_password) {
+        @if (target() && (onTarget ? onTargetNeedsPassword() : check()?.needs_sudo_password)) {
           <mat-form-field appearance="outline" style="width:100%">
             <mat-label>sudo password on the target ({{ check()!.user }})</mat-label>
             <input matInput type="password" [(ngModel)]="targetSudoPassword" autocomplete="off" (keyup.enter)="start()" />
           </mat-form-field>
         }
-        <mat-form-field appearance="outline" style="width:100%">
-          <mat-label>After a successful build</mat-label>
+        <mat-form-field appearance="outline" style="width:100%; margin-bottom:22px">
+          <mat-label>{{ target() ? 'After a successful build, the target' : 'After a successful build' }}</mat-label>
           <mat-select [(ngModel)]="after">
             <mat-option value="none">Nothing: stay on</mat-option>
             <mat-option value="reboot">{{ target() ? 'Reboot the target' : 'Reboot this machine' }}</mat-option>
@@ -177,9 +219,30 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
           </mat-select>
           <mat-hint>For builds you want to start and walk away from. The log is also saved on disk (Jobs page → earlier logs), so you can read it afterwards.</mat-hint>
         </mat-form-field>
-        @if (after !== 'none') {
-          <mat-checkbox [(ngModel)]="afterAlways" style="margin-top:4px">Also {{ after === 'reboot' ? 'reboot' : 'power off' }} when the build fails</mat-checkbox>
+        @if (target()) {
+          <mat-form-field appearance="outline" style="width:100%; margin-bottom:10px">
+            <mat-label>After the deployment, this machine</mat-label>
+            <mat-select [(ngModel)]="afterLocal">
+              <mat-option value="none">Stays on</mat-option>
+              <mat-option value="reboot">Reboots</mat-option>
+              <mat-option value="poweroff">Powers off</mat-option>
+            </mat-select>
+            <mat-hint>The selector above acts on the target; this one acts on the machine you are sitting at.</mat-hint>
+          </mat-form-field>
+          @if (afterLocal !== 'none') {
+            <div class="warning-box" style="margin-top:10px"><mat-icon>power_settings_new</mat-icon><span>This machine will {{ afterLocal === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the deployment {{ afterAlways ? 'ends' : 'succeeds' }}. It asks the login manager first, which works from a normal desktop session; otherwise your sudo password below is used.</span></div>
+            <mat-form-field appearance="outline" style="width:100%; margin-bottom:22px">
+              <mat-label>Your sudo password on this machine (optional)</mat-label>
+              <input matInput type="password" [(ngModel)]="password" autocomplete="off" />
+              <mat-hint>Only needed when your session is not allowed to power off the machine by itself (for example over SSH). Checked when the job starts.</mat-hint>
+            </mat-form-field>
+          }
+        }
+        @if (after !== 'none' || (target() && afterLocal !== 'none')) {
+          <mat-checkbox [(ngModel)]="afterAlways" style="margin-top:4px">Also {{ (target() ? afterLocal !== 'none' && after === 'none' ? afterLocal : after : after) === 'reboot' ? 'reboot' : 'power off' }} when the build fails</mat-checkbox>
+          @if (after !== 'none') {
           <div class="warning-box" style="margin-top:6px"><mat-icon>power_settings_new</mat-icon><span>{{ target() ? 'The target' : 'This machine' }} will {{ after === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the build {{ afterAlways ? 'ends, whether it succeeds or fails' : 'succeeds' }}. {{ afterAlways ? 'A manual Stop does not trigger it.' : 'Nothing happens if the build fails or is stopped.' }}{{ !target() && action !== 'switch' && action !== 'boot' ? ' Note: the action "' + action + '" does not activate anything, so a reboot only makes sense with switch or boot.' : '' }}</span></div>
+          }
         }
         <div class="row">
           <mat-checkbox [(ngModel)]="upgrade">{{ target() ? 'Upgrade: update flake inputs first' : 'Upgrade: drop flake.lock so all inputs update (sync.sh --upgrade)' }}</mat-checkbox>
@@ -265,7 +328,11 @@ export class BuildDialogComponent implements OnInit {
   targetSudoPassword = '';
   hardwareChoice: HardwareChoice = 'system';
   after: AfterBuild = 'none';
+  onTarget = false;
+  allowUnfreeEnv = true;
+  onTargetNeedsPassword(): boolean { const c = this.check(); return !!c && c.reachable && !c.is_root && c.passwordless_sudo !== true; }
   afterAlways = false;
+  afterLocal: AfterBuild = 'none';
   buildHostName = '';
   bcheck = signal<RemoteCheck | null>(null);
   bchecking = signal(false);
@@ -337,6 +404,7 @@ export class BuildDialogComponent implements OnInit {
       if (this.checking()) return false;
       const c = this.check();
       if (c && !c.reachable) return false;
+      if (this.onTarget) return !(this.onTargetNeedsPassword() && !this.targetSudoPassword);
       if (this.useWorkspaceHardware) { if (!p.hardware.local_exists) return false; }
       else if (c?.hardware_config === 'none') return false;
       if (c?.needs_sudo_password && !this.targetSudoPassword) return false;
@@ -372,7 +440,10 @@ export class BuildDialogComponent implements OnInit {
       target_sudo_password: (this.target() || this.buildHost()) ? (this.targetSudoPassword || null) : null,
       build_host: this.buildHost(),
       after: this.after,
-      after_even_on_failure: this.after !== 'none' && this.afterAlways,
+      after_even_on_failure: (this.after !== 'none' || this.afterLocal !== 'none') && this.afterAlways,
+      after_local: this.target() ? this.afterLocal : null,
+      on_target: !!this.target() && this.onTarget,
+      allow_unfree_env: !!this.target() && this.onTarget && this.allowUnfreeEnv,
     }).subscribe({
       next: job => {
         this.password = '';

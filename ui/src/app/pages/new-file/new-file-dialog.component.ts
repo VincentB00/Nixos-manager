@@ -1,3 +1,4 @@
+import { CodeEditorComponent } from '../../shared/code-editor.component';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
@@ -10,7 +11,7 @@ import { WorkspaceService } from '../../core/workspace.service';
 
 @Component({
   selector: 'app-new-file-dialog',
-  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule],
+  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, CodeEditorComponent],
   template: `
     <h2 mat-dialog-title>New module file</h2>
     <mat-dialog-content>
@@ -26,10 +27,8 @@ import { WorkspaceService } from '../../core/workspace.service';
           @for (f of candidates(); track f) { <mat-option [value]="f">{{ f }}</mat-option> }
         </mat-select>
       </mat-form-field>
-      <mat-form-field appearance="outline" style="width:100%">
-        <mat-label>Initial contents</mat-label>
-        <textarea matInput [(ngModel)]="source" rows="8" class="mono"></textarea>
-      </mat-form-field>
+      <div class="muted" style="font-size:.85em; margin:4px 0">Initial contents</div>
+      <app-code-editor [value]="source" (valueChange)="source = $event" (save)="name.endsWith('.nix') && !busy() && create()" height="220px" />
       @if (error()) { <div class="error-text">{{ error() }}</div> }
     </mat-dialog-content>
     <mat-dialog-actions align="end">
