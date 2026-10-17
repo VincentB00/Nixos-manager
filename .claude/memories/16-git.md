@@ -65,3 +65,14 @@ Non-repo folders get a short "git init" how-to instead.
   sync would show it as modified — intended (system copy is the truth).
 - Branch-per-host: switching branch swaps the whole config; the workspace
   reloads, hardware sync runs again on the new tree.
+
+## Discard (2026-10-17, Vincent)
+`POST /api/git/discard {path, files: null | [..], clean_untracked}` →
+`git::discard`: null = `git reset --hard -q` (+ `git clean -fd -q` when
+asked; untracked files are otherwise left alone), a list = `git restore
+--source=HEAD --staged --worktree -- <tracked…>` and plain deletion for
+untracked entries; paths validated (no `-`, `/`, `..`); unknown paths 404.
+UI: "Discard all changes" button above the file list (confirm dialog with a
+checkbox for the untracked files, says there is no undo) and a per-file
+"Discard changes" / "Delete file" button inside the expanded diff. Covered
+by the scratch-repo test (`end_to_end_on_a_scratch_repo`).

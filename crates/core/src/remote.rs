@@ -33,7 +33,8 @@ pub fn remote_script(req: &DeployRequest, target: &DeployTarget, staged: &Path, 
     let mut s = String::new();
     s.push_str("set -euo pipefail\n");
     // Fail fast instead of hanging on an interactive prompt (no TTY here).
-    s.push_str("export NIX_SSHOPTS=\"${NIX_SSHOPTS:-} -o BatchMode=yes -o ConnectTimeout=20\"\n");
+    s.push_str(&port_prelude(target.port));
+    s.push_str("export NIX_SSHOPTS=\"${NIX_SSHOPTS:-} ${NM_SSH_OPTS:-} -o BatchMode=yes -o ConnectTimeout=20\"\n");
     s.push_str(&format!("cd {wd}\n"));
     s.push_str(&format!("echo \"[nixos-manager] deploying to {} as $(id -un) from a staged copy of the working folder\"\n", target.ssh_target));
     if req.upgrade && kind == ConfigKind::Flake {
@@ -220,7 +221,7 @@ pub(crate) fn trust_snippet(target: &DeployTarget, grant: bool) -> String {
 pub fn on_target_wrapper(target: &DeployTarget, staged: &Path, remote_dir: &str, local_stop: &Path) -> String {
     format!(
         r#"set -uo pipefail
-T={t}
+{port}T={t}
 D={d}
 SRC={src}
 NM_STOP={stop}
@@ -247,6 +248,7 @@ RC=0
 printf '%s\n' "${{NM_TARGET_PW:-}}" | $SSH "$T" "sudo -S -p '' bash '$D/.nixos-manager-deploy.sh'" || RC=$?
 exit $RC
 "#,
+        port = port_prelude(target.port),
         t = sh(&target.ssh_target),
         d = sh(remote_dir),
         src = sh(&staged.to_string_lossy()),
@@ -547,7 +549,7 @@ pub fn target_hardware_script() -> &'static str {
 
 /// Read one file from the target over SSH (None when absent or unreachable).
 async fn fetch_target_file(target: &DeployTarget, remote_path: &str) -> Option<String> {
-    let local = format!("ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20 {} cat {}", sh(&target.ssh_target), sh(remote_path));
+    let local = format!("{}ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20 {} cat {}", port_prelude(target.port), sh(&target.ssh_target), sh(remote_path));
     let out = process::run("bash", &["-c", &local], None, std::time::Duration::from_secs(60)).await.ok()?;
     (out.status == 0 && !out.stdout.trim().is_empty()).then_some(out.stdout)
 }
@@ -555,7 +557,8 @@ async fn fetch_target_file(target: &DeployTarget, remote_path: &str) -> Option<S
 /// Fetch the target's hardware-configuration.nix over SSH → (source, text).
 pub async fn fetch_target_hardware(target: &DeployTarget) -> std::result::Result<(String, String), String> {
     let local = format!(
-        "ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20 {} bash -s <<'NM_REMOTE_EOF'\n{}NM_REMOTE_EOF\n",
+        "{}ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=20 {} bash -s <<'NM_REMOTE_EOF'\n{}NM_REMOTE_EOF\n",
+        port_prelude(target.port),
         sh(&target.ssh_target),
         target_hardware_script()
     );
@@ -585,7 +588,7 @@ pub async fn check(target: &DeployTarget) -> RemoteCheck {
         fns = REMOTE_IS_TRUSTED_FN
     );
     let mut cmd = tokio::process::Command::new("bash");
-    let local = format!("ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=15 {} bash -s <<'NM_REMOTE_EOF'\n{script}NM_REMOTE_EOF\n", sh(&target.ssh_target));
+    let local = format!("{}ssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=15 {} bash -s <<'NM_REMOTE_EOF'\n{script}NM_REMOTE_EOF\n", port_prelude(target.port), sh(&target.ssh_target));
     cmd.arg("-c").arg(&local);
     let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let l2 = lines.clone();
@@ -612,10 +615,11 @@ pub async fn check(target: &DeployTarget) -> RemoteCheck {
 }
 
 /// `ssh target 'nixos-version'` with BatchMode, as the user.
-pub async fn test_connection(job: JobHandle, ssh_target: String) {
+pub async fn test_connection(job: JobHandle, ssh_target: String, port: Option<u16>) {
     job.running().await;
     let script = format!(
-        "set -o pipefail\necho \"[nixos-manager] ssh {t} ...\"\nssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=15 {t} 'echo connected as $(id -un) on $(uname -n); nixos-version; nix --version; sudo -n true 2>/dev/null && echo \"passwordless sudo: yes\" || echo \"passwordless sudo: no (use root@ or configure NOPASSWD)\"; TU=$(nix config show trusted-users 2>/dev/null || nix show-config 2>/dev/null | sed -n \"s/^trusted-users = //p\"); ME=$(id -un); TR=$(nix store info 2>&1 | sed -n \"s/^Trusted: //p\"); if [ \"$ME\" = root ]; then echo \"trusted by nix: yes (root)\"; elif [ \"$TR\" = 1 ]; then echo \"trusted by nix: yes (daemon answer)\"; elif [ \"$TR\" = 0 ]; then echo \"trusted by nix: NO - deployments need the temporary trust step (the build dialog asks for your sudo password on this target). Permanent fix: nix.settings.trusted-users = [ \\\"$ME\\\" ] on this target.\"; elif echo \" $TU \" | grep -q \" $ME \"; then echo \"trusted by nix: yes\"; elif echo \" $TU \" | grep -q \" @wheel \" && id -nG | grep -qw wheel; then echo \"trusted by nix: yes (via @wheel)\"; else echo \"trusted by nix: NO - deployments will be refused (cannot add path ... lacks a signature). Add nix.settings.trusted-users = [ \\\"$ME\\\" ] on this target.\"; fi; if sudo -n grep -q \"^# nixos-manager temporary trust\" /root/.config/nix/nix.conf 2>/dev/null; then echo \"note: a leftover temporary trust entry from an interrupted deployment is still in /root/.config/nix/nix.conf; the next deployment with temporary trust enabled removes it\"; fi'\n",
+        "{port}set -o pipefail\necho \"[nixos-manager] ssh {t} ...\"\nssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=15 {t} 'echo connected as $(id -un) on $(uname -n); nixos-version; nix --version; sudo -n true 2>/dev/null && echo \"passwordless sudo: yes\" || echo \"passwordless sudo: no (use root@ or configure NOPASSWD)\"; TU=$(nix config show trusted-users 2>/dev/null || nix show-config 2>/dev/null | sed -n \"s/^trusted-users = //p\"); ME=$(id -un); TR=$(nix store info 2>&1 | sed -n \"s/^Trusted: //p\"); if [ \"$ME\" = root ]; then echo \"trusted by nix: yes (root)\"; elif [ \"$TR\" = 1 ]; then echo \"trusted by nix: yes (daemon answer)\"; elif [ \"$TR\" = 0 ]; then echo \"trusted by nix: NO - deployments need the temporary trust step (the build dialog asks for your sudo password on this target). Permanent fix: nix.settings.trusted-users = [ \\\"$ME\\\" ] on this target.\"; elif echo \" $TU \" | grep -q \" $ME \"; then echo \"trusted by nix: yes\"; elif echo \" $TU \" | grep -q \" @wheel \" && id -nG | grep -qw wheel; then echo \"trusted by nix: yes (via @wheel)\"; else echo \"trusted by nix: NO - deployments will be refused (cannot add path ... lacks a signature). Add nix.settings.trusted-users = [ \\\"$ME\\\" ] on this target.\"; fi; if sudo -n grep -q \"^# nixos-manager temporary trust\" /root/.config/nix/nix.conf 2>/dev/null; then echo \"note: a leftover temporary trust entry from an interrupted deployment is still in /root/.config/nix/nix.conf; the next deployment with temporary trust enabled removes it\"; fi'\n",
+        port = port_prelude(port),
         t = sh(&ssh_target)
     );
     let sender = job.line_sender();
@@ -687,7 +691,7 @@ mod tests {
             on_target: false,
             allow_unfree_env: false,
         };
-        let t = DeployTarget { name: "server".into(), ssh_target: "vincent@cyber-server-1".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true };
+        let t = DeployTarget { name: "server".into(), ssh_target: "vincent@cyber-server-1".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true, port: None };
         let s = remote_script(&req, &t, Path::new("/tmp/staged"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
         assert!(s.contains("nixos-rebuild switch --flake 'path:/tmp/staged#main' --target-host 'vincent@cyber-server-1' --sudo"), "{s}");
         assert!(s.contains("--ask-sudo-password 2>&1'") && s.contains("setsid bash -c \"$NM_CMD\" &"), "password path must run in its own session: {s}");
@@ -768,7 +772,7 @@ mod tests {
 
     #[test]
     fn on_target_wrapper_and_script_shape() {
-        let t = DeployTarget { name: "lap".into(), ssh_target: "vincent@lg".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true };
+        let t = DeployTarget { name: "lap".into(), ssh_target: "vincent@lg".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true, port: None };
         let w = on_target_wrapper(&t, Path::new("/tmp/staged"), "/tmp/nixos-manager-deploy-abcd1234", Path::new("/tmp/nm-stop"));
         assert!(w.contains("trap cleanup EXIT") && w.contains("rm -rf '$D' '$D.stop'") && w.contains("rsync -az --delete") && w.contains("tar -C \"$SRC\" -cf - ."), "{w}");
         assert!(w.contains("printf '%s\\n' \"${NM_TARGET_PW:-}\" | $SSH \"$T\" \"sudo -S -p '' bash '$D/.nixos-manager-deploy.sh'\""), "{w}");
@@ -787,6 +791,19 @@ mod tests {
     }
 
     #[test]
+    fn port_reaches_every_ssh_call() {
+        let t = DeployTarget { name: "p".into(), ssh_target: "vincent@h".into(), flake_host: Some("main".into()), build_host: None, use_remote_sudo: true, port: Some(2222) };
+        let req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: false, keep_configuration: None, hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: None, after_even_on_failure: false, after_local: None, on_target: false, allow_unfree_env: false };
+        let s = remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop"));
+        assert!(s.starts_with("set -euo pipefail\nNM_SSH_OPTS=\"${NM_SSH_OPTS:-} -p 2222\"\n"), "{s}");
+        assert!(s.contains("export NIX_SSHOPTS=\"${NIX_SSHOPTS:-} ${NM_SSH_OPTS:-} -o BatchMode=yes"), "{s}");
+        let w = on_target_wrapper(&t, Path::new("/tmp/st"), "/tmp/d", Path::new("/tmp/nm-stop"));
+        assert!(w.contains("NM_SSH_OPTS=\"${NM_SSH_OPTS:-} -p 2222\"\nT='vincent@h'"), "{w}");
+        assert_eq!(port_prelude(Some(22)), "");
+        assert_eq!(port_prelude(None), "");
+    }
+
+    #[test]
     fn target_hardware_script_parses() {
         let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(target_hardware_script()).status().unwrap();
         assert!(st.success());
@@ -802,7 +819,7 @@ mod tests {
             assert!(out.status.success(), "{label} does not parse:\n{}\n---\n{text}", String::from_utf8_lossy(&out.stderr));
         };
         let req = DeployRequest { path: "/w".into(), host: Some("main".into()), action: RebuildAction::Switch, upgrade: true, keep_configuration: None, hardware: None, skip_sync: false, password: String::new(), secrets_password: None, target: None, target_sudo_password: None, build_host: None, after: None, after_even_on_failure: false, after_local: None, on_target: false, allow_unfree_env: false };
-        let t = DeployTarget { name: "x".into(), ssh_target: "vincent@h".into(), flake_host: None, build_host: Some("b".into()), use_remote_sudo: true };
+        let t = DeployTarget { name: "x".into(), ssh_target: "vincent@h".into(), flake_host: None, build_host: Some("b".into()), use_remote_sudo: true, port: None };
         check("local deploy script", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Flake, "--sudo", Path::new("/tmp/nm-stop")));
         check("local deploy script (legacy)", &remote_script(&req, &t, Path::new("/tmp/st"), ConfigKind::Legacy, "--use-remote-sudo", Path::new("/tmp/nm-stop")));
         check("remote grant script", &remote_grant_script("vincent"));
@@ -839,6 +856,23 @@ pub fn managed_hosts() -> Vec<String> {
 }
 
 /// "user@host" → ("host", Some("user")). A bare host is allowed.
+/// Shell line that adds the target's SSH port to every ssh call of a local
+/// script (all of them go through `${NM_SSH_OPTS:-}`).
+pub fn port_prelude(port: Option<u16>) -> String {
+    match port {
+        Some(p) if p != 22 => format!("NM_SSH_OPTS=\"${{NM_SSH_OPTS:-}} -p {p}\"\n"),
+        _ => String::new(),
+    }
+}
+
+/// Public wrappers for other core modules.
+pub fn sh_pub(s: &str) -> String {
+    sh(s)
+}
+pub fn split_target_pub(t: &str) -> (String, Option<String>) {
+    split_target(t)
+}
+
 pub(crate) fn split_target(ssh_target: &str) -> (String, Option<String>) {
     match ssh_target.split_once('@') {
         Some((u, h)) => (h.trim().to_string(), Some(u.trim().to_string())),
@@ -950,7 +984,7 @@ fi
 pub async fn setup_key_access(job: JobHandle, target: DeployTarget, password: String) {
     job.running().await;
     let key_path = home().join(".ssh").join(APP_KEY_NAME).to_string_lossy().to_string();
-    let script = key_access_script(&target.ssh_target, &key_path, &target.name);
+    let script = format!("{}{}", port_prelude(target.port), key_access_script(&target.ssh_target, &key_path, &target.name));
     let sender = job.line_sender();
     let mut cmd = tokio::process::Command::new("bash");
     cmd.arg("-c").arg(&script).env("NM_SSH_PASSWORD", &password);

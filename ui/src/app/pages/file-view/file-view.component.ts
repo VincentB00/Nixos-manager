@@ -1,5 +1,6 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, DestroyRef, ElementRef, effect, inject, signal, viewChild } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -15,12 +16,28 @@ import { WizardDialogComponent, WizardData } from '../wizard/wizard-dialog.compo
 import { OrganizeDialogComponent } from './organize-dialog.component';
 import { MatMenuModule } from '@angular/material/menu';
 import { CodeEditorComponent } from '../../shared/code-editor.component';
+import { byteToIndex } from '../../shared/byte-offsets';
+import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import type { EditOp, NixFileView } from '../../api/generated';
+
+/** rnix messages like "unexpected TOKEN_ASSIGN at 254..260, wanted any of [TOKEN_SEMICOLON]" → words. */
+export function plainParseError(msg: string): string {
+  const tok: Record<string, string> = { TOKEN_SEMICOLON: '";"', TOKEN_R_BRACE: '"}"', TOKEN_R_BRACK: '"]"', TOKEN_R_PAREN: '")"', TOKEN_ASSIGN: '"="', TOKEN_COLON: '":"', TOKEN_IDENT: 'a name', TOKEN_STRING_START: 'a string', TOKEN_L_BRACE: '"{"', TOKEN_L_BRACK: '"["', TOKEN_COMMA: '","', TOKEN_DOT: '"."' };
+  const t = (n: string) => tok[n] ?? n.replace(/^TOKEN_/, '').toLowerCase().replace(/_/g, ' ');
+  const m = msg.match(/unexpected (TOKEN_\w+)(?: at \d+\.\.\d+)?, wanted any of \[([^\]]*)\]/);
+  if (m) {
+    const wanted = m[2].split(',').map(x => t(x.trim())).filter(Boolean);
+    return `expected ${wanted.join(' or ')} here (found ${t(m[1])}); often a missing ";" at the end of the previous line`;
+  }
+  if (/unexpected end of file/.test(msg)) return 'the file ends too early: a "}" or "]" or ";" is missing';
+  return msg.replace(/ at \d+\.\.\d+/, '');
+}
 
 @Component({
   selector: 'app-file-view',
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatProgressBarModule, MatSnackBarModule, MatTooltipModule, MatButtonToggleModule, MatMenuModule, NodeComponent, CodeEditorComponent],
+  imports: [FormsModule, MatButtonModule, MatIconModule, MatProgressBarModule, MatSnackBarModule, MatTooltipModule, TooltipAriaDirective, MatButtonToggleModule, MatMenuModule, NodeComponent, CodeEditorComponent],
   styles: [`
+    .args-line { display: flex; align-items: center; gap: 8px; margin: -4px 0 8px; flex-wrap: wrap; }
     .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
     h2 { margin: 0; font-weight: 400; }
     .args { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -35,22 +52,22 @@ import type { EditOp, NixFileView } from '../../api/generated';
   template: `
     @if (busy()) { <mat-progress-bar mode="indeterminate" /> }
     @if (view(); as v) {
+      @if (isHardwareFile()) {
+        <div class="warning-box"><mat-icon>memory</mat-icon><span><b>Machine-owned file.</b> hardware-configuration.nix is copied from this machine's /etc/nixos every time the folder is opened, so changes made here are overwritten. For this machine, regenerate it with <span class="mono">sudo nixos-generate-config</span>; for a remote target, copy the target's file in from the Remote page. Shown read-only.</span></div>
+      }
       <div class="head">
         <h2 class="mono">{{ v.rel_path }}</h2>
         <span class="muted hint">{{ v.line_count }} lines</span>
-        @if (v.args.length) {
-          <span class="args" matTooltip="Values this module receives from the system">@for (a of v.args; track a) { <span class="mono">{{ a }}</span> }@if (v.has_ellipsis) { <span>…</span> }</span>
-        }
         <span class="spacer"></span>
         @if (isNix() && mode() === 'form') {
-          <button mat-flat-button (click)="openWizard()" [disabled]="v.parse_errors.length > 0" matTooltip="Guided: install programs, turn on a service, set an option"><mat-icon>add_circle</mat-icon> Add something</button>
+          <button mat-flat-button (click)="openWizard()" [disabled]="v.parse_errors.length > 0" [matTooltip]="v.parse_errors.length ? 'Fix the syntax errors in this file first (switch to Code)' : 'Guided: install programs, turn on a service, set an option'"><mat-icon>add_circle</mat-icon> Add something</button>
         }
         @if (isNix() && mode() === 'form') {
           <button mat-icon-button (click)="expandAll(true)" matTooltip="Expand all groups"><mat-icon>unfold_more</mat-icon></button>
           <button mat-icon-button (click)="expandAll(false)" matTooltip="Collapse all groups"><mat-icon>unfold_less</mat-icon></button>
         }
         @if (isNix()) {
-          <button mat-stroked-button (click)="organize()" [disabled]="v.parse_errors.length > 0 || busy()" matTooltip="Group settings that share a prefix into nested blocks"><mat-icon>auto_fix_high</mat-icon> Organize</button>
+          <button mat-stroked-button (click)="organize()" [disabled]="v.parse_errors.length > 0 || busy()" matTooltip="Group settings that share a prefix into nested blocks, so the file reads top-down. Only the layout changes; the resulting system is identical."><mat-icon>auto_fix_high</mat-icon> Organize</button>
         }
         @if (isNix()) {
           <mat-button-toggle-group [value]="mode()" (change)="switchMode($event.value)" hideSingleSelectionIndicator>
@@ -58,8 +75,12 @@ import type { EditOp, NixFileView } from '../../api/generated';
             <mat-button-toggle value="code"><mat-icon>code</mat-icon> Code</mat-button-toggle>
           </mat-button-toggle-group>
         } @else { <span class="muted hint">Not a Nix file: shown as plain text</span> }
+        @if (canUndo()) { <button mat-icon-button (click)="undo()" matTooltip="Undo the last change made in this app to this file"><mat-icon>undo</mat-icon></button> }
         <button mat-icon-button (click)="load()" matTooltip="Reload from disk"><mat-icon>refresh</mat-icon></button>
       </div>
+      @if (v.args.length) {
+        <div class="args-line"><span class="muted hint">receives</span> <span class="args" matTooltip="Values this module receives from the system">@for (a of v.args; track a) { <span class="mono">{{ a }}</span> }@if (v.has_ellipsis) { <span>…</span> }</span></div>
+      }
       @if (description()) { <p class="desc">{{ description() }}</p> }
       @if (v.parse_errors.length && isNix()) {
         <div class="errors">
@@ -67,7 +88,10 @@ import type { EditOp, NixFileView } from '../../api/generated';
           <ul>@for (e of v.parse_errors; track $index) { <li>{{ e.message }}@if (e.span) { (line {{ e.span.line }}) }</li> }</ul>
         </div>
       }
-      @if (!writable()) { <div class="warning-box"><mat-icon>lock</mat-icon><span>This folder is not writable; changes will fail to save.</span></div> }
+      @if (!writable()) {
+        <div class="warning-box"><mat-icon>lock</mat-icon><span>{{ ws.overview()?.location?.is_etc_nixos ? 'This is the live system configuration; it is owned by root and cannot be edited here. Work on a copy in your home folder instead: edits happen there, and Build copies it back and rebuilds the system.' : 'This folder is not writable; changes will fail to save.' }}
+          @if (ws.overview()?.location?.is_etc_nixos) { <button mat-stroked-button style="margin-left:10px" (click)="startFromSystem()"><mat-icon>content_copy</mat-icon> Start from this machine's configuration</button> }</span></div>
+      }
 
       @if (mode() === 'form' && isNix()) {
         @if (isEmptyModule(v)) {
@@ -97,7 +121,7 @@ import type { EditOp, NixFileView } from '../../api/generated';
             @if (!v.args.includes('vars') && v.args.length) { <span class="muted hint">This module does not receive <span class="mono">vars</span> yet; it is added when you save a file that uses it.</span> }
           </div>
         }
-        <app-code-editor #wholeArea [value]="codeText" (valueChange)="codeText = $event" (save)="codeText !== v.source && saveWhole()" (ready)="editorReady()" [language]="isNix() ? 'nix' : 'plaintext'" height="calc(100vh - 290px)" />
+        <app-code-editor #wholeArea [value]="codeText" (valueChange)="codeText = $event" (save)="codeText !== v.source && saveWhole()" (ready)="editorReady()" [language]="isNix() ? 'nix' : 'plaintext'" [readOnly]="isHardwareFile()" [markers]="markers()" height="calc(100vh - 290px)" />
         <div class="flex" style="margin-top:8px">
           <button mat-flat-button (click)="saveWhole()" [disabled]="codeText === v.source"><mat-icon>save</mat-icon> Save file</button>
           <button mat-button (click)="codeText = v.source" [disabled]="codeText === v.source">Revert</button>
@@ -110,6 +134,7 @@ import type { EditOp, NixFileView } from '../../api/generated';
   `,
 })
 export class FileViewComponent {
+  private router = inject(Router);
   private api = inject(ApiService);
   private route = inject(ActivatedRoute);
   private ws = inject(WorkspaceService);
@@ -131,6 +156,10 @@ export class FileViewComponent {
       const f = q.get('f');
       const line = Number(q.get('line') ?? '');
       if (f && f !== this.file()) {
+        if (this.dirty() && !window.confirm('You have unsaved changes in the code editor. Discard them and open ' + f + '?')) {
+          this.router.navigate([], { relativeTo: this.route, queryParams: { f: this.file() }, queryParamsHandling: 'merge' });
+          return;
+        }
         this.file.set(f);
         if (!f.endsWith('.nix')) this.mode.set('code');
         this.load();
@@ -149,7 +178,39 @@ export class FileViewComponent {
     });
   }
 
+  plain(m: string) { return plainParseError(m); }
   isNix() { return (this.file() ?? '').endsWith('.nix'); }
+  /** Parse errors as editor markers with a plain-language message. */
+  markers() {
+    const v = this.view();
+    if (!v) return [];
+    return v.parse_errors.map(e => {
+      const idx = e.span ? byteToIndex(v.source, e.span.start) : v.source.length;
+      const before = v.source.slice(0, idx);
+      const line = (before.match(/\n/g)?.length ?? 0) + 1;
+      const column = idx - before.lastIndexOf('\n');
+      return { line, column, message: plainParseError(e.message) };
+    });
+  }
+  startFromSystem() {
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '560px', data: {
+      title: 'Copy this configuration to a folder you can edit',
+      message: 'The live configuration in /etc/nixos is copied into the folder below (flake.lock stays in /etc/nixos). You edit the copy here; Build copies it back and rebuilds the system.',
+      label: 'Folder', value: '~/nixos', okLabel: 'Copy and open', checkbox: { label: 'Make it a git repository (recommended: history and undo)', checked: true },
+    } }).afterClosed().subscribe(r => {
+      if (!r?.value.trim()) return;
+      this.busy.set(true);
+      this.api.startFromSystem(r.value.trim(), r.checked).subscribe({
+        next: info => { this.busy.set(false); this.router.navigate(['/w', 'overview'], { queryParams: { path: info.path } }); },
+        error: (e: ApiFailure) => { this.busy.set(false); this.snack.open(e.message, 'Dismiss', { duration: 10000 }); },
+      });
+    });
+  }
+
+  isHardwareFile() { return (this.file() ?? '').split('/').pop() === 'hardware-configuration.nix'; }
+  /** Unsaved Code-view edits: ask before they would be lost (mode switch, other file, other page). */
+  dirty(): boolean { const v = this.view(); return !!v && this.mode() === 'code' && this.codeText !== v.source; }
+  canLeave(): boolean { return !this.dirty() || window.confirm('You have unsaved changes in the code editor. Leave and discard them?'); }
   description() { return this.ws.fileMap().get(this.file() ?? '')?.description ?? null; }
   writable() { return this.ws.overview()?.location.writable ?? true; }
 
@@ -166,19 +227,41 @@ export class FileViewComponent {
   }
 
   switchMode(m: 'form' | 'code') {
+    if (m === 'form' && !this.canLeave()) { this.mode.set('code'); return; }
     if (m === 'code') this.codeText = this.view()?.source ?? '';
     this.mode.set(m);
   }
 
-  apply(op: EditOp) {
+  /** Per-session undo: the file content before each change made from this app. */
+  private history: { file: string; source: string }[] = [];
+  historyLen = signal(0);
+  canUndo() { const f = this.file(); return this.historyLen() > 0 && this.history.some(h => h.file === f); }
+  undo() {
+    const f = this.file();
+    const idx = this.history.map(h => h.file).lastIndexOf(f ?? '');
+    if (idx < 0) return;
+    const [h] = this.history.splice(idx, 1);
+    this.historyLen.set(this.history.length);
+    this.apply({ op: 'replace_file', source: h.source }, false);
+    this.snack.open('Undone', undefined, { duration: 1500 });
+  }
+  private remember(v: NixFileView) {
+    this.history.push({ file: v.rel_path, source: v.source });
+    if (this.history.length > 30) this.history.shift();
+    this.historyLen.set(this.history.length);
+  }
+
+  apply(op: EditOp, record = true) {
     const path = this.ws.path();
     const v = this.view();
     if (!path || !v) return;
+    if (record) this.remember(v);
     this.busy.set(true);
     this.api.edit(path, v.rel_path, v.version, op).subscribe({
       next: nv => {
         this.view.set(nv);
         this.busy.set(false);
+        this.ws.refreshBuildStatus();
         this.snack.open('Saved', undefined, { duration: 1500 });
         if (op.op === 'replace_file') this.ensureVarsArg(nv);
         if (op.op === 'toggle_disabled' || op.op === 'list_append' || op.op === 'list_remove' || op.op === 'replace_file') this.ws.reload();
@@ -202,9 +285,10 @@ export class FileViewComponent {
     const data: WizardData = { path, file: v.rel_path, version: v.version };
     this.dialog.open(WizardDialogComponent, { width: '760px', maxWidth: '95vw', data }).afterClosed().subscribe((nv: NixFileView | undefined) => {
       if (nv) {
+        this.remember(v);
         this.view.set(nv);
-        this.snack.open('Added', undefined, { duration: 2000 });
         this.ws.reload();
+        this.snack.open(`Added to ${nv.rel_path}. The system does not have it yet: press Build to apply it.`, 'Build', { duration: 10000 }).onAction().subscribe(() => this.router.navigate(['/w', 'overview'], { queryParamsHandling: 'merge', queryParams: { build: 1 } }));
       }
     });
   }

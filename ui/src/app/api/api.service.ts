@@ -9,6 +9,11 @@ import type {
   SecretsStatus, SecretEntry, DeployTarget, RemoteCheck, HardwareSync, HardwarePullResult,
   GitInfo, GitBranch, GitSuggestion, GitNetResult,
   JobLogFile, SearchResult,
+  BuildStatus,
+  PopularPackage,
+  StoreUsage,
+  RemoteSystemInfo,
+  OtherSystem,
 } from './generated';
 
 export class ApiFailure extends Error {
@@ -57,8 +62,25 @@ export class ApiService {
   gitPush(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/push`, { path, password })); }
   gitFetch(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/fetch`, { path, password })); }
   gitPull(path: string, password: string | null) { return this.wrap(this.http.post<GitNetResult>(`${this.base}/git/pull`, { path, password })); }
+  gitAddRemote(path: string, name: string, url: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/remote`, { path, name, url })); }
   gitIdentity(path: string, name: string, email: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/identity`, { path, name, email })); }
   search(path: string, q: string, mode: 'both' | 'name' | 'content') { return this.wrap(this.http.get<SearchResult>(`${this.base}/search`, { params: { path, q, mode } })); }
+  startFromSystem(dest: string, gitInit: boolean) { return this.wrap(this.http.post<LocationInfo>(`${this.base}/location/start-from-system`, { dest, git_init: gitInit })); }
+  setHost(path: string, host: string | null) { return this.wrap(this.http.post<AppState>(`${this.base}/location/host`, { path, host })); }
+  buildStatus(path: string) { return this.wrap(this.http.get<BuildStatus>(`${this.base}/deploy/status`, { params: { path } })); }
+  packagesPopular() { return this.wrap(this.http.get<PopularPackage[]>(`${this.base}/packages/popular`)); }
+  systemStore() { return this.wrap(this.http.get<StoreUsage>(`${this.base}/system/store`)); }
+  systemRollback(number: number, password: string) { return this.wrap(this.http.post<JobInfo>(`${this.base}/system/rollback`, { number, password })); }
+  systemGc(olderThanDays: number, password: string, keepGenerations = false) { return this.wrap(this.http.post<JobInfo>(`${this.base}/system/gc`, { older_than_days: olderThanDays, password, keep_generations: keepGenerations })); }
+  gitDiscard(path: string, files: string[] | null, cleanUntracked: boolean) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/discard`, { path, files, clean_untracked: cleanUntracked })); }
+  systemRemote(target: string) { return this.wrap(this.http.get<RemoteSystemInfo>(`${this.base}/system/remote`, { params: { target } })); }
+  systemRemoteRollback(target: string, number: number, password: string | null) { return this.wrap(this.http.post<JobInfo>(`${this.base}/system/remote/rollback`, { target, value: number, password })); }
+  systemRemoteGc(target: string, days: number, password: string | null, keepGenerations = false) { return this.wrap(this.http.post<JobInfo>(`${this.base}/system/remote/gc`, { target, value: days, password, keep_generations: keepGenerations })); }
+  systemOtherSystems() { return this.wrap(this.http.get<OtherSystem[]>(`${this.base}/system/other-systems`)); }
+  systemDeletePaths(paths: string[], password: string, gcAfter: boolean) { return this.wrap(this.http.post<JobInfo>(`${this.base}/system/delete-paths`, { paths, password, gc_after: gcAfter })); }
+  systemRemoteOtherSystems(target: string) { return this.wrap(this.http.get<OtherSystem[]>(`${this.base}/system/remote/other-systems`, { params: { target } })); }
+  systemRemoteDeletePaths(target: string, paths: string[], password: string | null, gcAfter: boolean) { return this.wrap(this.http.post<JobInfo>(`${this.base}/system/remote/delete-paths`, { target, paths, password, gc_after: gcAfter })); }
+  gitInit(path: string) { return this.wrap(this.http.post<GitInfo>(`${this.base}/git/init`, { path })); }
   hardwareSync(path: string) { return this.wrap(this.http.post<HardwareSync>(`${this.base}/location/hardware-sync`, { path })); }
   openLocation(path: string) { return this.wrap(this.http.post<LocationInfo>(`${this.base}/location/open`, { path })); }
 
@@ -80,7 +102,7 @@ export class ApiService {
     return this.wrap(this.http.post<RenameResult>(`${this.base}/config/fs/rename`, { path, target, to, update_references }));
   }
   duplicate(path: string, target: string, to: string) { return this.wrap(this.http.post<{ ok: boolean }>(`${this.base}/config/fs/duplicate`, { path, target, to })); }
-  delete(path: string, target: string, recursive = false) { return this.wrap(this.http.post<{ ok: boolean }>(`${this.base}/config/fs/delete`, { path, target, recursive })); }
+  delete(path: string, target: string, recursive = false, removeReferences = false) { return this.wrap(this.http.post<{ ok: boolean; updated_files: string[] }>(`${this.base}/config/fs/delete`, { path, target, recursive, remove_references: removeReferences })); }
   flakeHosts(path: string) { return this.wrap(this.http.get<string[]>(`${this.base}/config/flake-hosts`, { params: { path } })); }
 
   optionsStatus() { return this.wrap(this.http.get<OptionsStatus>(`${this.base}/options/status`)); }
@@ -122,7 +144,7 @@ export class ApiService {
   }
   targets() { return this.wrap(this.http.get<DeployTarget[]>(`${this.base}/remote/targets`)); }
   saveTargets(targets: DeployTarget[]) { return this.wrap(this.http.put<DeployTarget[]>(`${this.base}/remote/targets`, targets)); }
-  remoteTest(ssh_target: string) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/test`, { ssh_target })); }
+  remoteTest(ssh_target: string, port: number | null = null) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/test`, { ssh_target, port })); }
   remoteCheck(target: string) { return this.wrap(this.http.post<RemoteCheck>(`${this.base}/remote/check`, { target, password: '-' })); }
   setupKey(target: string, password: string) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/setup-key`, { target, password })); }
   rootKey(password: string, builder_host: string | null) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/root-key`, { password, builder_host })); }

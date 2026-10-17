@@ -4,7 +4,7 @@ import { Router } from '@angular/router';
 import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
-import { MatFormFieldModule } from '@angular/material/form-field';
+import { MAT_FORM_FIELD_DEFAULT_OPTIONS, MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -17,7 +17,18 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
 @Component({
   selector: 'app-build-dialog',
   imports: [FormsModule, MatDialogModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatRadioModule, MatSelectModule, MatExpansionModule],
+  providers: [{ provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'outline', subscriptSizing: 'dynamic' } }],
   styles: [`
+    mat-dialog-content { padding-top: 12px !important; }
+    .summary { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 8px; background: var(--mat-sys-primary-container); color: var(--mat-sys-on-primary-container); margin-bottom: 14px; line-height: 1.45; }
+    .summary mat-icon { flex: none; }
+    .adv { margin-bottom: 14px; }
+    .adv mat-panel-description { font-size: .85em; }
+    mat-form-field { width: 100%; margin-bottom: 14px; }
+    .row mat-form-field { margin-bottom: 6px; }
+    mat-radio-group { margin: 0 0 14px; }
+    mat-checkbox { display: block; }
+    .section { font-size: .78em; letter-spacing: .06em; text-transform: uppercase; color: var(--mat-sys-on-surface-variant); margin: 18px 0 8px; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .row mat-form-field { flex: 1 1 200px; }
     .steps { margin: 8px 0 16px; padding-left: 18px; font-size: .9em; line-height: 1.6; }
@@ -37,6 +48,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
           <div class="warn"><mat-icon>block</mat-icon>
             <span>The opened folder <b>is</b> /etc/nixos. Syncing onto itself is refused (same guard as sync.sh). Open a working copy elsewhere, or tick "skip sync" to only rebuild.</span></div>
         }
+        @if (p.targets.length) {
         <mat-form-field appearance="outline" style="width:100%">
           <mat-label>Deploy to</mat-label>
           <mat-select [ngModel]="targetName" (ngModelChange)="selectTarget($event)">
@@ -45,6 +57,13 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
           </mat-select>
           <mat-hint>Remote targets are managed on the Remote page.</mat-hint>
         </mat-form-field>
+        }
+        <div class="summary"><mat-icon>{{ target() ? 'lan' : 'computer' }}</mat-icon><span>{{ summary() }}</span></div>
+        <mat-expansion-panel class="adv" [expanded]="advanced()" (opened)="setAdvanced(true)" (closed)="setAdvanced(false)">
+          <mat-expansion-panel-header>
+            <mat-panel-title>Advanced</mat-panel-title>
+            <mat-panel-description>where to build · what to run · after the build · sync options</mat-panel-description>
+          </mat-expansion-panel-header>
         @if (target()) {
           <mat-radio-group [(ngModel)]="onTarget" style="display:flex; flex-direction:column; gap:2px; margin:4px 0 8px">
             <mat-radio-button [value]="false">Build here, send the result to the target</mat-radio-button>
@@ -118,7 +137,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
             <div>Build here, activate on <b>{{ t.name }}</b> (<span class="mono">{{ t.ssh_target }}</span>):
               <ol class="steps">
                 @if (p.kind === 'flake') { <li>{{ upgrade ? 'Resolve the flake inputs fresh (upgrade; no flake.lock is used)' : 'Pin the inputs with the flake.lock from /etc/nixos on the target (or from this machine when the target has none)' }}</li> }
-                <li>{{ useWorkspaceHardware ? 'Build with the working copy\'s ' + p.hardware.rel_path + ' (the target\'s own file is not used)' : 'Fetch and use the target\'s own /etc/nixos/hardware-configuration.nix' }}</li>
+                <li>{{ useWorkspaceHardware ? 'Build with the hardware-configuration.nix from the working copy (the file on the target is not used)' : 'Fetch and use the hardware-configuration.nix from /etc/nixos on the target' }}</li>
                 <li>Evaluate and build the system from the working copy on this machine{{ t.build_host ? ', compiling on ' + t.build_host : '' }}</li>
                 @if (!check()?.is_root) { <li>Check that your user is trusted by nix on the target; if not, grant it temporarily via sudo and remove it again at the end</li> }
                 <li>Copy the result to the target over SSH</li>
@@ -174,6 +193,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
         </div>
         }
 
+        <div class="section">What to build</div>
         <div class="row">
           @if (p.kind === 'flake') {
             <mat-form-field appearance="outline">
@@ -210,7 +230,8 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
             <input matInput type="password" [(ngModel)]="targetSudoPassword" autocomplete="off" (keyup.enter)="start()" />
           </mat-form-field>
         }
-        <mat-form-field appearance="outline" style="width:100%; margin-bottom:22px">
+        <div class="section">Afterwards</div>
+        <mat-form-field appearance="outline" style="width:100%">
           <mat-label>{{ target() ? 'After a successful build, the target' : 'After a successful build' }}</mat-label>
           <mat-select [(ngModel)]="after">
             <mat-option value="none">Nothing: stay on</mat-option>
@@ -220,7 +241,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
           <mat-hint>For builds you want to start and walk away from. The log is also saved on disk (Jobs page → earlier logs), so you can read it afterwards.</mat-hint>
         </mat-form-field>
         @if (target()) {
-          <mat-form-field appearance="outline" style="width:100%; margin-bottom:10px">
+          <mat-form-field appearance="outline" style="width:100%">
             <mat-label>After the deployment, this machine</mat-label>
             <mat-select [(ngModel)]="afterLocal">
               <mat-option value="none">Stays on</mat-option>
@@ -231,7 +252,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
           </mat-form-field>
           @if (afterLocal !== 'none') {
             <div class="warning-box" style="margin-top:10px"><mat-icon>power_settings_new</mat-icon><span>This machine will {{ afterLocal === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the deployment {{ afterAlways ? 'ends' : 'succeeds' }}. It asks the login manager first, which works from a normal desktop session; otherwise your sudo password below is used.</span></div>
-            <mat-form-field appearance="outline" style="width:100%; margin-bottom:22px">
+            <mat-form-field appearance="outline" style="width:100%">
               <mat-label>Your sudo password on this machine (optional)</mat-label>
               <input matInput type="password" [(ngModel)]="password" autocomplete="off" />
               <mat-hint>Only needed when your session is not allowed to power off the machine by itself (for example over SSH). Checked when the job starts.</mat-hint>
@@ -244,10 +265,13 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
           <div class="warning-box" style="margin-top:6px"><mat-icon>power_settings_new</mat-icon><span>{{ target() ? 'The target' : 'This machine' }} will {{ after === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the build {{ afterAlways ? 'ends, whether it succeeds or fails' : 'succeeds' }}. {{ afterAlways ? 'A manual Stop does not trigger it.' : 'Nothing happens if the build fails or is stopped.' }}{{ !target() && action !== 'switch' && action !== 'boot' ? ' Note: the action "' + action + '" does not activate anything, so a reboot only makes sense with switch or boot.' : '' }}</span></div>
           }
         }
+        <div class="section">Options</div>
         <div class="row">
           <mat-checkbox [(ngModel)]="upgrade">{{ target() ? 'Upgrade: update flake inputs first' : 'Upgrade: drop flake.lock so all inputs update (sync.sh --upgrade)' }}</mat-checkbox>
           @if (!target()) { <mat-checkbox [(ngModel)]="skipSync">Skip sync: rebuild /etc/nixos as it is now</mat-checkbox> }
         </div>
+
+        </mat-expansion-panel>
 
         @if (p.hardware.differs && !skipSync && !target()) {
           <div class="warning-box"><mat-icon>warning</mat-icon>
@@ -302,6 +326,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
       <button mat-button (click)="validate()" [disabled]="loading()" matTooltip="Evaluate and dry-build first, without sudo"><mat-icon>fact_check</mat-icon> Validate only</button>
       <span class="spacer"></span>
       <button mat-button mat-dialog-close>Cancel</button>
+      @if (!canStart() && startHint(); as h) { <span class="muted" style="font-size:.85em; margin-right:8px">{{ h }}</span> }
       <button mat-flat-button (click)="start()" [disabled]="!canStart()"><mat-icon>play_arrow</mat-icon> Start</button>
     </mat-dialog-actions>
   `,
@@ -327,6 +352,28 @@ export class BuildDialogComponent implements OnInit {
   targetName = '';
   targetSudoPassword = '';
   hardwareChoice: HardwareChoice = 'system';
+  /** The dialog opens simple; "Advanced" remembers whether it was expanded. */
+  advanced = signal<boolean>((() => { try { return localStorage.getItem('nixos-manager.buildAdvanced') === '1'; } catch { return false; } })());
+  setAdvanced(v: boolean) { this.advanced.set(v); try { localStorage.setItem('nixos-manager.buildAdvanced', v ? '1' : '0'); } catch { /* ignore */ } }
+  private actionWords(): string {
+    switch (this.action) {
+      case 'switch': return 'switch to it now (and at the next boot)';
+      case 'boot': return 'make it the default at the next boot';
+      case 'test': return 'activate it until the next boot';
+      case 'build': return 'only build it (nothing is activated)';
+      default: return 'only check that it builds';
+    }
+  }
+  summary(): string {
+    const p = this.pre();
+    const host = p?.kind === 'flake' ? (this.host || p?.hosts[0] || 'main') : null;
+    const what = host ? `your configuration "${host}"` : 'your configuration';
+    const t = this.target();
+    if (t && this.onTarget) return `Copies your working copy to ${t.name}, builds ${what} there and ${this.actionWords().replace('it', 'it')} on ${t.name}.`;
+    if (t) return `Builds ${what} on this computer, sends the result to ${t.name} and ${this.actionWords()} there.`;
+    const where = this.buildHost() ? `on ${this.buildHost()!.name}` : 'on this computer';
+    return `Builds ${what} ${where} from your working copy, then ${this.actionWords()} on this computer. A build takes a few minutes; you can keep using the computer meanwhile.`;
+  }
   after: AfterBuild = 'none';
   onTarget = false;
   allowUnfreeEnv = true;
@@ -357,6 +404,7 @@ export class BuildDialogComponent implements OnInit {
   target(): DeployTarget | null { return this.pre()?.targets.find(t => t.name === this.targetName) ?? null; }
   selectTarget(name: string) {
     this.targetName = name;
+    if (name) this.setAdvanced(true);
     this.check.set(null);
     this.targetSudoPassword = '';
     const t = this.target();
@@ -395,6 +443,24 @@ export class BuildDialogComponent implements OnInit {
       next: job => { this.ref.close(); this.router.navigate(['/w', 'jobs', job.id], { queryParams: { path: this.data.path } }); },
       error: (e: ApiFailure) => this.error.set(e.message),
     });
+  }
+
+  /** Why Start is disabled, in one short sentence (the field may be below the fold). */
+  startHint(): string | null {
+    const p = this.pre();
+    if (!p || this.starting()) return null;
+    if (this.target()) {
+      if (this.checking()) return 'checking the target…';
+      const c = this.check();
+      if (c && !c.reachable) return 'the target is unreachable';
+      if (this.onTarget ? this.onTargetNeedsPassword() && !this.targetSudoPassword : c?.needs_sudo_password && !this.targetSudoPassword) return 'enter the sudo password on the target';
+      if (!this.onTarget && c?.hardware_config === 'none' && !this.useWorkspaceHardware) return 'the target has no hardware configuration';
+      return null;
+    }
+    if (!this.password) return 'enter your sudo password below';
+    if (p.source_is_etc_nixos && !this.skipSync) return 'the working copy is /etc/nixos itself: tick "Skip sync"';
+    if (this.buildHost() && this.builderNeedsPassword() && !this.targetSudoPassword) return 'enter the sudo password on the builder';
+    return null;
   }
 
   canStart() {

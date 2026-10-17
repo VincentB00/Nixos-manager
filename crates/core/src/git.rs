@@ -377,6 +377,86 @@ pub async fn suggest_message(workdir: &Path) -> Result<GitSuggestion> {
 
 // ───────────────────────── commit / identity / network ─────────────────────────
 
+/// Throw away uncommitted work. `files` = None: `git reset --hard` (every
+/// tracked file back to HEAD; with `clean_untracked` also `git clean -fd`).
+/// `files` = Some: only those paths — tracked ones are restored from HEAD,
+/// untracked ones are deleted. Returns the refreshed status.
+pub async fn discard(workdir: &Path, files: Option<&[String]>, clean_untracked: bool) -> Result<GitInfo> {
+    let cur = info(workdir).await?;
+    if !cur.is_repo {
+        return Err(CoreError::Invalid("not a git repository".into()));
+    }
+    match files {
+        None => {
+            ok(git(workdir, &["reset", "--hard", "-q"], None, T).await?)?;
+            if clean_untracked {
+                ok(git(workdir, &["clean", "-fd", "-q"], None, T).await?)?;
+            }
+        }
+        Some(list) => {
+            if list.is_empty() {
+                return Err(CoreError::Invalid("no files selected".into()));
+            }
+            for f in list {
+                if f.starts_with('-') || f.starts_with('/') || f.split('/').any(|c| c == "..") {
+                    return Err(CoreError::Invalid(format!("bad file path: {f}")));
+                }
+            }
+            let known: std::collections::HashMap<&str, GitFileState> = cur.files.iter().map(|f| (f.path.as_str(), f.state)).collect();
+            let mut tracked: Vec<&str> = Vec::new();
+            for f in list {
+                match known.get(f.as_str()) {
+                    Some(GitFileState::Untracked) => {
+                        let full = workdir.join(f);
+                        if full.is_dir() { std::fs::remove_dir_all(&full)?; } else { std::fs::remove_file(&full)?; }
+                    }
+                    Some(_) => tracked.push(f.as_str()),
+                    None => return Err(CoreError::NotFound(format!("{f} has no changes"))),
+                }
+            }
+            if !tracked.is_empty() {
+                let mut args = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+                args.extend(tracked);
+                ok(git(workdir, &args, None, T).await?)?;
+            }
+        }
+    }
+    info(workdir).await
+}
+
+/// `git init` + a .gitignore for the machine-owned files + a first commit
+/// (when an identity exists; otherwise the files are only staged).
+pub async fn init_repo(workdir: &Path) -> Result<GitInfo> {
+    if is_repo(workdir).await.is_some() {
+        return Err(CoreError::Conflict("this folder is already a git repository".into()));
+    }
+    ok(git(workdir, &["init", "-q", "--initial-branch=main"], None, T).await?)?;
+    let gi = workdir.join(".gitignore");
+    if !gi.exists() {
+        std::fs::write(&gi, "# machine-owned files managed by Nixos-manager\nhardware-configuration.nix\nflake.lock\nresult\n")?;
+    }
+    ok(git(workdir, &["add", "-A", "--", "."], None, T).await?)?;
+    let cur = info(workdir).await?;
+    if cur.user_name.is_some() && cur.user_email.is_some() {
+        let _ = git(workdir, &["commit", "-q", "-m", "Initial configuration"], None, T).await;
+    }
+    info(workdir).await
+}
+
+/// `git remote add <name> <url>` (the URL may embed credentials; it is never echoed back unredacted).
+pub async fn add_remote(workdir: &Path, name: &str, url: &str) -> Result<GitInfo> {
+    let name = name.trim();
+    let url = url.trim();
+    if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
+        return Err(CoreError::Invalid("remote name must be a single word, e.g. origin".into()));
+    }
+    if url.is_empty() || url.starts_with('-') {
+        return Err(CoreError::Invalid("remote URL is required".into()));
+    }
+    ok(git(workdir, &["remote", "add", name, url], None, T).await?)?;
+    info(workdir).await
+}
+
 pub async fn set_identity(workdir: &Path, name: &str, email: &str) -> Result<GitInfo> {
     if name.trim().is_empty() || email.trim().is_empty() || !email.contains('@') {
         return Err(CoreError::Invalid("name and a valid e-mail are needed".into()));
@@ -579,7 +659,18 @@ mod tests {
         let br = branches(&work).await.unwrap();
         assert!(br.iter().any(|b| b.name == "laptop" && b.current && b.upstream.as_deref() == Some("origin/laptop")), "{br:?}");
         assert!(br.iter().any(|b| b.name == "main" && !b.current));
+        // discard: a modified tracked file and an untracked one
+        std::fs::write(work.join("configuration.nix"), "{ ... }: { }\n").unwrap();
+        std::fs::write(work.join("junk.txt"), "x\n").unwrap();
+        let i = discard(&work, Some(&["configuration.nix".to_string()]), false).await.unwrap();
+        assert!(std::fs::read_to_string(work.join("configuration.nix")).unwrap().contains("trusted-users"), "restored from HEAD");
+        assert!(i.files.iter().any(|f| f.path == "junk.txt"), "untracked file untouched by a per-file discard of another file");
+        let i = discard(&work, None, false).await.unwrap();
+        assert!(i.files.iter().any(|f| f.path == "junk.txt"), "reset --hard leaves untracked files");
+        let i = discard(&work, None, true).await.unwrap();
+        assert!(!i.files.iter().any(|f| f.path == "junk.txt"), "clean removes them");
         // untracked files do not block switching
+        std::fs::write(work.join("notes.md"), "hi\n").unwrap();
         let i = switch(&work, "main").await.unwrap();
         assert_eq!(i.branch.as_deref(), Some("main"));
         fetch(&work, None).await.unwrap();

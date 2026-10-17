@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, ElementRef, computed, inject, input, signal, viewChild } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { NgTemplateOutlet } from '@angular/common';
@@ -28,7 +29,7 @@ const ROOT: TreeNode = { name: '(root)', path: '', children: [], isDir: true };
  *  rename / duplicate / delete actions on a context menu. */
 @Component({
   selector: 'app-file-tree',
-  imports: [RouterLink, RouterLinkActive, NgTemplateOutlet, MatIconModule, MatTooltipModule, MatMenuModule, MatButtonModule],
+  imports: [RouterLink, RouterLinkActive, NgTemplateOutlet, MatIconModule, MatTooltipModule, TooltipAriaDirective, MatMenuModule, MatButtonModule],
   styles: [`
     :host { display: block; font-size: .9em; padding: 0 8px 8px; }
     .row { display: flex; align-items: center; gap: 4px; padding: 2px 2px 2px 6px; border-radius: 6px; cursor: pointer; color: inherit; text-decoration: none; white-space: nowrap; }
@@ -249,18 +250,19 @@ export class FileTreeComponent {
 
   remove(node: TreeNode) {
     const importers = node.file?.imported_by ?? [];
-    const warn = importers.length ? ` It is imported by ${importers.join(', ')}; those imports will break until you remove them.` : '';
+    const warn = importers.length ? ` It is imported by ${importers.join(', ')}.` : '';
     this.prompt({
       title: node.isDir ? 'Delete folder?' : 'Delete file?',
       message: `${node.path} will be deleted from disk. There is no undo.${warn}`,
-      checkbox: node.isDir ? { label: 'Also delete everything inside it', checked: false } : undefined,
+      checkbox: node.isDir ? { label: 'Also delete everything inside it' + (importers.length ? ' and remove the imports pointing into it' : ''), checked: false } : importers.length ? { label: `Also remove the import(s) in ${importers.join(', ')} so the configuration keeps working`, checked: true } : undefined,
       okLabel: 'Delete', danger: true,
     }).subscribe(r => {
       if (!r) return;
-      this.api.delete(this.ws.path()!, node.path, r.checked).subscribe({
+      this.api.delete(this.ws.path()!, node.path, node.isDir && r.checked, importers.length > 0 && r.checked).subscribe({
         next: () => {
           this.extraDirs.update(s => { const n = new Set(s); n.delete(node.path); return n; });
           this.done(`Deleted ${node.path}`);
+          if (this.router.url.includes('/w/file') && decodeURIComponent(this.router.url).includes('f=' + node.path)) this.router.navigate(['/w', 'overview'], { queryParamsHandling: 'merge', queryParams: { f: null, line: null } });
         },
         error: e => this.fail(e),
       });

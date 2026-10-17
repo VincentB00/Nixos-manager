@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -20,7 +21,7 @@ import type { GitBranch, GitFileStatus, GitInfo } from '../../api/generated';
 /** Git for the working folder: branches, status with diffs, commit with a generated message, push / fetch / pull. */
 @Component({
   selector: 'app-git',
-  imports: [FormsModule, MatButtonModule, MatCardModule, MatCheckboxModule, MatExpansionModule, MatFormFieldModule, MatIconModule, MatInputModule, MatMenuModule, MatProgressBarModule, MatTooltipModule],
+  imports: [FormsModule, MatButtonModule, MatCardModule, MatCheckboxModule, MatExpansionModule, MatFormFieldModule, MatIconModule, MatInputModule, MatMenuModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     h2 { margin: 0; font-weight: 400; }
@@ -61,7 +62,7 @@ import type { GitBranch, GitFileStatus, GitInfo } from '../../api/generated';
           <span class="meta">
             @if (g.upstream) { tracking <span class="mono">{{ g.upstream }}</span> · {{ g.ahead }} ahead · {{ g.behind }} behind }
             @else if (g.remotes.length) { not pushed yet (remote: {{ g.remotes[0].name }}) }
-            @else { no remote configured }
+            @else { no remote configured · <a href="javascript:void(0)" (click)="addRemote()">add one</a> }
           </span>
           <button mat-icon-button (click)="net('fetch')" matTooltip="Fetch: update the ahead/behind counts from the remote" [disabled]="busy() || !g.remotes.length"><mat-icon>sync</mat-icon></button>
           <button mat-icon-button (click)="net('pull')" matTooltip="Pull (fast-forward only)" [disabled]="busy() || !g.upstream || g.behind === 0"><mat-icon>download</mat-icon></button>
@@ -79,7 +80,8 @@ import type { GitBranch, GitFileStatus, GitInfo } from '../../api/generated';
           <pre class="diff">git init
 git add .
 git commit -m "Initial configuration"</pre>
-          <p class="meta">Then reopen this page. Adding a remote (GitHub, Gitea, …) lets you push from here.</p>
+          <p class="meta">Or let the app do it (creates the repository, ignores the machine-owned files, and makes a first commit when your git name and e-mail are set):</p>
+          <button mat-flat-button (click)="initRepo()" [disabled]="busy()"><mat-icon>add</mat-icon> Initialise git here</button>
         </mat-card-content></mat-card>
       } @else {
         <div class="cards">
@@ -91,6 +93,8 @@ git commit -m "Initial configuration"</pre>
                 <div class="row" style="border-bottom:1px solid var(--mat-sys-surface-container); margin-bottom:4px">
                   <mat-checkbox [checked]="allSelected()" [indeterminate]="someSelected() && !allSelected()" (change)="toggleAll($event.checked)">all</mat-checkbox>
                   <span class="meta">tick the files to include in the commit</span>
+                  <span class="spacer"></span>
+                  <button mat-stroked-button (click)="discardAll()" [disabled]="busy()" matTooltip="git reset --hard: every tracked file goes back to the last commit"><mat-icon>restart_alt</mat-icon> Discard all changes</button>
                 </div>
                 <mat-accordion displayMode="flat" multi>
                   @for (f of g.files; track f.path) {
@@ -102,6 +106,7 @@ git commit -m "Initial configuration"</pre>
                           <span class="p" [matTooltip]="f.path">{{ f.path }}@if (f.old_path) { <span class="muted"> ← {{ f.old_path }}</span> }</span>
                         </mat-panel-title>
                       </mat-expansion-panel-header>
+                      <div style="display:flex; justify-content:flex-end; margin-bottom:4px"><button mat-button (click)="discardOne(f)" [disabled]="busy()" [matTooltip]="f.state === 'untracked' ? 'Delete this new file' : 'Restore this file from the last commit'"><mat-icon>undo</mat-icon> {{ f.state === 'untracked' ? 'Delete file' : 'Discard changes' }}</button></div>
                       @if (diffs().get(f.path); as d) {
                         <pre class="diff">@for (l of d.split('\\n'); track $index) {<span [class.add]="l.startsWith('+') && !l.startsWith('+++')" [class.del]="l.startsWith('-') && !l.startsWith('---')" [class.hunk]="l.startsWith('@@')">{{ l }}
 </span>}</pre>
@@ -214,6 +219,40 @@ export class GitComponent implements OnInit {
     });
   }
 
+  discardOne(f: GitFileStatus) {
+    const untracked = f.state === 'untracked';
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '480px', data: {
+      title: untracked ? `Delete ${f.path}?` : `Discard the changes in ${f.path}?`,
+      message: untracked ? 'The file is not in any commit, so this deletes it for good.' : 'The file goes back to the version in the last commit. There is no undo for this.',
+      okLabel: untracked ? 'Delete' : 'Discard', danger: true,
+    } }).afterClosed().subscribe(r => {
+      if (!r) return;
+      this.busy.set(true);
+      this.api.gitDiscard(this.path(), [f.path], false).subscribe({
+        next: g => { this.busy.set(false); this.snack.open(untracked ? 'File deleted' : 'Changes discarded', undefined, { duration: 2500 }); this.afterChange(g); },
+        error: (e: ApiFailure) => { this.busy.set(false); this.error.set(e.message); },
+      });
+    });
+  }
+
+  discardAll() {
+    const g = this.info();
+    const untracked = (g?.files ?? []).filter(f => f.state === 'untracked').length;
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '520px', data: {
+      title: 'Discard all uncommitted changes?',
+      message: `git reset --hard: every tracked file goes back to the last commit (${g?.last_commit?.subject ?? 'HEAD'}). There is no undo for this.${untracked ? ` ${untracked} new file(s) are not in any commit; tick below to delete them too.` : ''}`,
+      checkbox: untracked ? { label: 'Also delete the new (untracked) files', checked: false } : undefined,
+      okLabel: 'Discard everything', danger: true,
+    } }).afterClosed().subscribe(r => {
+      if (!r) return;
+      this.busy.set(true);
+      this.api.gitDiscard(this.path(), null, r.checked).subscribe({
+        next: gi => { this.busy.set(false); this.message.set(''); this.snack.open('Working tree reset to the last commit', undefined, { duration: 3000 }); this.afterChange(gi); },
+        error: (e: ApiFailure) => { this.busy.set(false); this.error.set(e.message); },
+      });
+    });
+  }
+
   switchTo(b: GitBranch) {
     this.error.set(null);
     this.busy.set(true);
@@ -232,6 +271,28 @@ export class GitComponent implements OnInit {
       this.busy.set(true);
       this.api.gitCreateBranch(this.path(), r.value.trim()).subscribe({
         next: g => { this.busy.set(false); this.snack.open(`On new branch ${g.branch}`, undefined, { duration: 3000 }); this.afterChange(g); },
+        error: (e: ApiFailure) => { this.busy.set(false); this.error.set(e.message); },
+      });
+    });
+  }
+
+  initRepo() {
+    this.busy.set(true);
+    this.api.gitInit(this.path()).subscribe({
+      next: g => { this.busy.set(false); this.snack.open('Git repository created', undefined, { duration: 3000 }); this.afterChange(g); this.refresh(true); },
+      error: (e: ApiFailure) => { this.busy.set(false); this.error.set(e.message); },
+    });
+  }
+
+  addRemote() {
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '560px', data: {
+      title: 'Add a remote', message: 'Where to push this repository, e.g. git@github.com:you/nixos.git or https://gitea.example/you/nixos.git. The remote is named "origin".',
+      label: 'Remote URL', placeholder: 'git@github.com:you/nixos.git', okLabel: 'Add',
+    } }).afterClosed().subscribe(r => {
+      if (!r?.value.trim()) return;
+      this.busy.set(true);
+      this.api.gitAddRemote(this.path(), 'origin', r.value.trim()).subscribe({
+        next: g => { this.busy.set(false); this.snack.open('Remote added', undefined, { duration: 3000 }); this.afterChange(g); },
         error: (e: ApiFailure) => { this.busy.set(false); this.error.set(e.message); },
       });
     });

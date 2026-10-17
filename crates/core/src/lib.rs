@@ -40,6 +40,7 @@ pub mod remote;
 pub mod search;
 pub mod secrets;
 pub mod state;
+pub mod system;
 pub mod types;
 pub mod validate;
 

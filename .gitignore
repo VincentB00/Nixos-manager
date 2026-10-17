@@ -5,3 +5,4 @@
 /ui/.angular
 *.log
 .DS_Store
+.claude/tests/

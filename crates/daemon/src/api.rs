@@ -32,8 +32,23 @@ impl IntoResponse for ApiErr {
             CoreError::Json(_) => (StatusCode::BAD_REQUEST, "json"),
             CoreError::Other(_) => (StatusCode::INTERNAL_SERVER_ERROR, "other"),
         };
+        if status.is_server_error() {
+            // tower_http's failure line has no path or message; make 500s diagnosable
+            tracing::error!(code, %status, "request failed: {}", self.0);
+        }
         (status, Json(ApiError { error: self.0.to_string(), code: code.to_string() })).into_response()
     }
+}
+
+/// Logs method + path for every 5xx so the console line is actionable.
+async fn log_server_errors(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let res = next.run(req).await;
+    if res.status().is_server_error() {
+        tracing::error!(%method, %uri, status = %res.status(), "server error");
+    }
+    res
 }
 
 type ApiResult<T> = Result<Json<T>, ApiErr>;
@@ -48,6 +63,22 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
         .route("/location/open", post(open_location))
         .route("/location/hardware-sync", post(hardware_sync))
         .route("/search", get(search_files))
+        .route("/location/start-from-system", post(start_from_system))
+        .route("/location/host", post(set_host))
+        .route("/deploy/status", get(build_status))
+        .route("/packages/popular", get(packages_popular))
+        .route("/system/store", get(system_store))
+        .route("/system/rollback", post(system_rollback))
+        .route("/system/gc", post(system_gc))
+        .route("/system/other-systems", get(system_other))
+        .route("/system/delete-paths", post(system_delete_paths))
+        .route("/system/remote", get(system_remote))
+        .route("/system/remote/other-systems", get(system_remote_other))
+        .route("/system/remote/delete-paths", post(system_remote_delete_paths))
+        .route("/system/remote/rollback", post(system_remote_rollback))
+        .route("/system/remote/gc", post(system_remote_gc))
+        .route("/git/init", post(git_init))
+        .route("/git/discard", post(git_discard))
         .route("/git/info", get(git_info))
         .route("/git/branches", get(git_branches))
         .route("/git/diff", get(git_diff))
@@ -59,6 +90,7 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
         .route("/git/fetch", post(git_fetch))
         .route("/git/pull", post(git_pull))
         .route("/git/identity", post(git_identity))
+        .route("/git/remote", post(git_remote_add))
         .route("/remote/pull-hardware", post(hardware_pull))
         .route("/config/overview", get(config_overview))
         .route("/config/file", get(config_file))
@@ -122,6 +154,7 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
     Router::new()
         .nest("/api", api)
         .fallback(get(static_files::serve))
+        .layer(axum::middleware::from_fn(log_server_errors))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -162,7 +195,7 @@ async fn fs_suggestions() -> ApiResult<Vec<LocationSuggestion>> {
 /// Copy this machine's hardware-configuration.nix into the working folder
 /// (the system copy is the source of truth). Called by the UI on open.
 async fn hardware_sync(State(ctx): State<AppCtx>, Json(body): Json<PathBody>) -> ApiResult<HardwareSync> {
-    let path = fsbrowse::normalize_input(&body.path);
+    let path = root_of(&body.path)?;
     let pull = ctx.store.get().await.hardware_pulls.get(&path.to_string_lossy().to_string()).cloned();
     let mut r = nixos_manager_core::hardware::sync_from_system(&path, pull.as_ref());
     r.lock_removed = nixos_manager_core::flake::remove_workspace_lock(&path);
@@ -173,11 +206,16 @@ async fn hardware_sync(State(ctx): State<AppCtx>, Json(body): Json<PathBody>) ->
 /// working folder's file and remember it, so the sync-on-open keeps it.
 async fn hardware_pull(State(ctx): State<AppCtx>, Json(req): Json<HardwarePullRequest>) -> ApiResult<HardwarePullResult> {
     let target = ctx.store.get().await.deploy_targets.into_iter().find(|t| t.name == req.target).ok_or_else(|| CoreError::NotFound(format!("target {}", req.target)))?;
-    let path = fsbrowse::normalize_input(&req.path);
+    let path = root_of(&req.path)?;
     let (source, text) = remote::fetch_target_hardware(&target).await.map_err(CoreError::Invalid)?;
     let (rel, pull) = nixos_manager_core::hardware::install_pulled(&path, &target.name, &text).map_err(|e| CoreError::Invalid(format!("cannot write the file: {e}")))?;
     ctx.store.set_hardware_pull(&path.to_string_lossy(), pull).await?;
     Ok(Json(HardwarePullResult { target: target.name, source, rel_path: rel.to_string_lossy().to_string(), bytes: text.len() as u64 }))
+}
+
+#[derive(Deserialize)]
+struct KeyAccessQuery {
+    target: String,
 }
 
 #[derive(Deserialize)]
@@ -188,32 +226,158 @@ struct FindQuery {
 }
 
 async fn search_files(Query(q): Query<FindQuery>) -> ApiResult<SearchResult> {
-    Ok(Json(nixos_manager_core::search::search(&root_of(&q.path), &q.q, q.mode.as_deref().unwrap_or("both"))))
+    let root = root_of(&q.path)?;
+    let mode = q.mode.unwrap_or_else(|| "both".into());
+    let r = tokio::task::spawn_blocking(move || nixos_manager_core::search::search(&root, &q.q, &mode)).await.map_err(|e| CoreError::Other(e.to_string()))?;
+    Ok(Json(r))
+}
+
+async fn start_from_system(State(ctx): State<AppCtx>, Json(r): Json<StartFromSystemRequest>) -> ApiResult<LocationInfo> {
+    let dest = fsbrowse::normalize_input(&r.dest);
+    if !dest.is_absolute() {
+        return Err(CoreError::Invalid("destination must be an absolute path".into()).into());
+    }
+    let d2 = dest.clone();
+    tokio::task::spawn_blocking(move || fsbrowse::start_from_system(&d2)).await.map_err(|e| CoreError::Other(e.to_string()))??;
+    if r.git_init {
+        if let Err(e) = nixos_manager_core::git::init_repo(&dest).await {
+            tracing::warn!("git init after start-from-system failed: {e}");
+        }
+    }
+    let info = discover::location_info(&dest)?;
+    ctx.store.touch_location(&info.path, info.hosts.first().cloned()).await?;
+    Ok(Json(info))
+}
+
+async fn set_host(State(ctx): State<AppCtx>, Json(r): Json<SetHostRequest>) -> ApiResult<AppState> {
+    let root = root_of(&r.path)?;
+    Ok(Json(ctx.store.touch_location(&root.to_string_lossy(), r.host).await?))
+}
+
+async fn build_status(Query(q): Query<ConfigQuery>) -> ApiResult<BuildStatus> {
+    let root = root_of(&q.path)?;
+    Ok(Json(tokio::task::spawn_blocking(move || nixos_manager_core::jobs::JobManager::build_status(&root)).await.map_err(|e| CoreError::Other(e.to_string()))?))
+}
+
+async fn packages_popular() -> ApiResult<Vec<PopularPackage>> {
+    Ok(Json(nixos_manager_core::packages::popular()))
+}
+
+async fn system_store() -> ApiResult<StoreUsage> {
+    Ok(Json(nixos_manager_core::system::store_usage().await?))
+}
+
+async fn system_rollback(State(ctx): State<AppCtx>, Json(r): Json<RollbackRequest>) -> ApiResult<JobInfo> {
+    if r.password.is_empty() {
+        return Err(CoreError::Invalid("sudo password is required".into()).into());
+    }
+    let job = ctx.jobs.create("system", &format!("Roll back to generation {}", r.number)).await;
+    let id = job.id.clone();
+    tokio::spawn(nixos_manager_core::system::rollback(job, r.number, r.password));
+    Ok(Json(ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?))
+}
+
+async fn system_gc(State(ctx): State<AppCtx>, Json(r): Json<GcRequest>) -> ApiResult<JobInfo> {
+    if r.password.is_empty() {
+        return Err(CoreError::Invalid("sudo password is required".into()).into());
+    }
+    let title = if r.keep_generations { "Collect garbage (keep all generations)".to_string() } else if r.older_than_days == 0 { "Collect garbage (delete all old generations)".to_string() } else { format!("Collect garbage (older than {} days)", r.older_than_days) };
+    let job = ctx.jobs.create("system", &title).await;
+    let id = job.id.clone();
+    tokio::spawn(nixos_manager_core::system::collect_garbage(job, r.older_than_days, r.password, r.keep_generations));
+    Ok(Json(ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?))
+}
+
+async fn git_discard(Json(r): Json<GitDiscardRequest>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::discard(&root_of(&r.path)?, r.files.as_deref(), r.clean_untracked).await?))
+}
+
+async fn system_other() -> ApiResult<Vec<OtherSystem>> {
+    Ok(Json(nixos_manager_core::system::other_systems().await?))
+}
+
+async fn system_delete_paths(State(ctx): State<AppCtx>, Json(r): Json<DeletePathsRequest>) -> ApiResult<JobInfo> {
+    if r.password.is_empty() {
+        return Err(CoreError::Invalid("sudo password is required".into()).into());
+    }
+    if r.paths.is_empty() {
+        return Err(CoreError::Invalid("no paths selected".into()).into());
+    }
+    let job = ctx.jobs.create("system", &format!("Delete {} build(s) for other machines from the store", r.paths.len())).await;
+    let id = job.id.clone();
+    tokio::spawn(nixos_manager_core::system::delete_paths(job, r.paths, r.password, r.gc_after));
+    Ok(Json(ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?))
+}
+
+async fn system_remote_other(State(ctx): State<AppCtx>, Query(q): Query<KeyAccessQuery>) -> ApiResult<Vec<OtherSystem>> {
+    let t = find_target(&ctx, &q.target).await?;
+    Ok(Json(nixos_manager_core::system::remote_other_systems(&t).await?))
+}
+
+async fn system_remote_delete_paths(State(ctx): State<AppCtx>, Json(r): Json<RemoteDeletePathsRequest>) -> ApiResult<JobInfo> {
+    let t = find_target(&ctx, &r.target).await?;
+    if r.paths.is_empty() {
+        return Err(CoreError::Invalid("no paths selected".into()).into());
+    }
+    let job = ctx.jobs.create("system", &format!("Delete {} build(s) for other machines on {}", r.paths.len(), t.name)).await;
+    let id = job.id.clone();
+    tokio::spawn(nixos_manager_core::system::remote_delete_paths(job, t, r.paths, r.password.unwrap_or_default(), r.gc_after));
+    Ok(Json(ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?))
+}
+
+async fn find_target(ctx: &AppCtx, name: &str) -> Result<DeployTarget, CoreError> {
+    ctx.store.get().await.deploy_targets.into_iter().find(|t| t.name == name).ok_or_else(|| CoreError::NotFound(format!("target {name}")))
+}
+
+async fn system_remote(State(ctx): State<AppCtx>, Query(q): Query<KeyAccessQuery>) -> ApiResult<RemoteSystemInfo> {
+    let t = find_target(&ctx, &q.target).await?;
+    Ok(Json(nixos_manager_core::system::remote_info(&t).await?))
+}
+
+async fn system_remote_rollback(State(ctx): State<AppCtx>, Json(r): Json<RemoteSystemRequest>) -> ApiResult<JobInfo> {
+    let t = find_target(&ctx, &r.target).await?;
+    let job = ctx.jobs.create("system", &format!("Roll back {} to generation {}", t.name, r.value)).await;
+    let id = job.id.clone();
+    tokio::spawn(nixos_manager_core::system::remote_rollback(job, t, r.value, r.password.unwrap_or_default()));
+    Ok(Json(ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?))
+}
+
+async fn system_remote_gc(State(ctx): State<AppCtx>, Json(r): Json<RemoteSystemRequest>) -> ApiResult<JobInfo> {
+    let t = find_target(&ctx, &r.target).await?;
+    let title = if r.keep_generations { format!("Collect garbage on {} (keep all generations)", t.name) } else if r.value == 0 { format!("Collect garbage on {} (delete all old generations)", t.name) } else { format!("Collect garbage on {} (older than {} days)", t.name, r.value) };
+    let job = ctx.jobs.create("system", &title).await;
+    let id = job.id.clone();
+    tokio::spawn(nixos_manager_core::system::remote_gc(job, t, r.value, r.password.unwrap_or_default(), r.keep_generations));
+    Ok(Json(ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?))
+}
+
+async fn git_init(Json(r): Json<PathBody>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::init_repo(&root_of(&r.path)?).await?))
 }
 
 // ───────────────────────── git ─────────────────────────
 
 async fn git_info(Query(q): Query<ConfigQuery>) -> ApiResult<GitInfo> {
-    Ok(Json(nixos_manager_core::git::info(&root_of(&q.path)).await?))
+    Ok(Json(nixos_manager_core::git::info(&root_of(&q.path)?).await?))
 }
 async fn git_branches(Query(q): Query<ConfigQuery>) -> ApiResult<Vec<GitBranch>> {
-    Ok(Json(nixos_manager_core::git::branches(&root_of(&q.path)).await?))
+    Ok(Json(nixos_manager_core::git::branches(&root_of(&q.path)?).await?))
 }
 async fn git_diff(Query(q): Query<ConfigQuery>) -> ApiResult<String> {
     let file = q.file.ok_or_else(|| CoreError::Invalid("file is required".into()))?;
-    Ok(Json(nixos_manager_core::git::diff(&root_of(&q.path), &file).await?))
+    Ok(Json(nixos_manager_core::git::diff(&root_of(&q.path)?, &file).await?))
 }
 async fn git_suggest(Query(q): Query<ConfigQuery>) -> ApiResult<GitSuggestion> {
-    Ok(Json(nixos_manager_core::git::suggest_message(&root_of(&q.path)).await?))
+    Ok(Json(nixos_manager_core::git::suggest_message(&root_of(&q.path)?).await?))
 }
 async fn git_switch(Json(r): Json<GitBranchRequest>) -> ApiResult<GitInfo> {
-    Ok(Json(nixos_manager_core::git::switch(&root_of(&r.path), &r.name).await?))
+    Ok(Json(nixos_manager_core::git::switch(&root_of(&r.path)?, &r.name).await?))
 }
 async fn git_branch(Json(r): Json<GitBranchRequest>) -> ApiResult<GitInfo> {
-    Ok(Json(nixos_manager_core::git::create_branch(&root_of(&r.path), &r.name).await?))
+    Ok(Json(nixos_manager_core::git::create_branch(&root_of(&r.path)?, &r.name).await?))
 }
 async fn git_commit(Json(r): Json<GitCommitRequest>) -> ApiResult<GitNetResult> {
-    let root = root_of(&r.path);
+    let root = root_of(&r.path)?;
     let info = nixos_manager_core::git::commit(&root, &r.message, r.paths.as_deref()).await?;
     if r.push {
         let output = nixos_manager_core::git::push(&root, r.password.as_deref()).await?;
@@ -223,22 +387,25 @@ async fn git_commit(Json(r): Json<GitCommitRequest>) -> ApiResult<GitNetResult> 
     Ok(Json(GitNetResult { output: String::new(), info }))
 }
 async fn git_push(Json(r): Json<GitNetRequest>) -> ApiResult<GitNetResult> {
-    let root = root_of(&r.path);
+    let root = root_of(&r.path)?;
     let output = nixos_manager_core::git::push(&root, r.password.as_deref()).await?;
     Ok(Json(GitNetResult { output, info: nixos_manager_core::git::info(&root).await? }))
 }
 async fn git_fetch(Json(r): Json<GitNetRequest>) -> ApiResult<GitNetResult> {
-    let root = root_of(&r.path);
+    let root = root_of(&r.path)?;
     let output = nixos_manager_core::git::fetch(&root, r.password.as_deref()).await?;
     Ok(Json(GitNetResult { output, info: nixos_manager_core::git::info(&root).await? }))
 }
 async fn git_pull(Json(r): Json<GitNetRequest>) -> ApiResult<GitNetResult> {
-    let root = root_of(&r.path);
+    let root = root_of(&r.path)?;
     let output = nixos_manager_core::git::pull(&root, r.password.as_deref()).await?;
     Ok(Json(GitNetResult { output, info: nixos_manager_core::git::info(&root).await? }))
 }
+async fn git_remote_add(Json(r): Json<GitRemoteRequest>) -> ApiResult<GitInfo> {
+    Ok(Json(nixos_manager_core::git::add_remote(&root_of(&r.path)?, &r.name, &r.url).await?))
+}
 async fn git_identity(Json(r): Json<GitIdentityRequest>) -> ApiResult<GitInfo> {
-    Ok(Json(nixos_manager_core::git::set_identity(&root_of(&r.path), &r.name, &r.email).await?))
+    Ok(Json(nixos_manager_core::git::set_identity(&root_of(&r.path)?, &r.name, &r.email).await?))
 }
 
 async fn open_location(State(ctx): State<AppCtx>, Json(body): Json<PathBody>) -> ApiResult<LocationInfo> {
@@ -257,28 +424,29 @@ struct ConfigQuery {
     file: Option<String>,
 }
 
-fn root_of(q: &str) -> PathBuf {
-    fsbrowse::normalize_input(q)
+/// Canonical, existing configuration folder (refuses anything else; never creates it).
+fn root_of(q: &str) -> Result<PathBuf, CoreError> {
+    fsbrowse::config_root(q)
 }
 
 async fn config_overview(Query(q): Query<ConfigQuery>) -> ApiResult<ConfigOverview> {
-    let root = root_of(&q.path);
+    let root = root_of(&q.path)?;
     Ok(Json(discover::overview(&root).await?))
 }
 
 async fn config_file(Query(q): Query<ConfigQuery>) -> ApiResult<NixFileView> {
-    let root = root_of(&q.path);
+    let root = root_of(&q.path)?;
     let file = q.file.ok_or_else(|| CoreError::Invalid("file is required".into()))?;
     Ok(Json(discover::read_file_view(&root, &file)?))
 }
 
 async fn config_edit(Json(req): Json<EditRequest>) -> ApiResult<NixFileView> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     Ok(Json(edit::apply(&root, &req.file, &req.version, &req.op)?))
 }
 
 async fn config_organize(Json(req): Json<OrganizeRequest>) -> ApiResult<OrganizeResult> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     let full = discover::resolve_inside(&root, &req.file)?;
     let source = std::fs::read_to_string(&full).map_err(|_| CoreError::NotFound(format!("{} not found", req.file)))?;
     if nixos_manager_core::nixparse::version_of(&source) != req.version {
@@ -295,34 +463,36 @@ async fn config_organize(Json(req): Json<OrganizeRequest>) -> ApiResult<Organize
 }
 
 async fn config_new_file(Json(req): Json<NewFileRequest>) -> ApiResult<NixFileView> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     edit::create_file(&root, &req.file, &req.source, req.import_into.as_deref())?;
     Ok(Json(discover::read_file_view(&root, &req.file)?))
 }
 
 async fn fs_mkdir(Json(req): Json<FsRequest>) -> ApiResult<serde_json::Value> {
-    fsops::mkdir(&root_of(&req.path), &req.target)?;
+    fsops::mkdir(&root_of(&req.path)?, &req.target)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn fs_rename(Json(req): Json<FsRequest>) -> ApiResult<RenameResult> {
     let to = req.to.ok_or_else(|| CoreError::Invalid("'to' is required".into()))?;
-    Ok(Json(fsops::rename(&root_of(&req.path), &req.target, &to, req.update_references.unwrap_or(true))?))
+    Ok(Json(fsops::rename(&root_of(&req.path)?, &req.target, &to, req.update_references.unwrap_or(true))?))
 }
 
 async fn fs_duplicate(Json(req): Json<FsRequest>) -> ApiResult<serde_json::Value> {
     let to = req.to.ok_or_else(|| CoreError::Invalid("'to' is required".into()))?;
-    fsops::duplicate(&root_of(&req.path), &req.target, &to)?;
+    fsops::duplicate(&root_of(&req.path)?, &req.target, &to)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn fs_delete(Json(req): Json<FsRequest>) -> ApiResult<serde_json::Value> {
-    fsops::delete(&root_of(&req.path), &req.target, req.recursive.unwrap_or(false))?;
+    let updated = fsops::delete(&root_of(&req.path)?, &req.target, req.recursive.unwrap_or(false), req.remove_references.unwrap_or(false))?;
+    return Ok(Json(serde_json::json!({ "ok": true, "updated_files": updated })));
+    #[allow(unreachable_code)]
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn flake_hosts(Query(q): Query<ConfigQuery>) -> ApiResult<Vec<String>> {
-    let root = root_of(&q.path);
+    let root = root_of(&q.path)?;
     Ok(Json(nix::flake_hosts(&root).await?))
 }
 
@@ -365,14 +535,14 @@ async fn options_get(State(ctx): State<AppCtx>, Query(q): Query<SearchQuery>) ->
 async fn packages_search(State(ctx): State<AppCtx>, Query(q): Query<SearchQuery>) -> ApiResult<PackageSearchResult> {
     let set = q.set.clone().unwrap_or_else(|| "pkgs".into());
     let installable = match &q.path {
-        Some(p) => flake::package_sets(&root_of(p)).into_iter().find(|s| s.name == set).and_then(|s| s.flake_ref),
+        Some(p) => flake::package_sets(&root_of(p)?).into_iter().find(|s| s.name == set).and_then(|s| s.flake_ref),
         None => None,
     };
     Ok(Json(ctx.packages.search(q.q.as_deref().unwrap_or(""), installable.as_deref(), &set).await?))
 }
 
 async fn package_sets(Query(q): Query<ConfigQuery>) -> ApiResult<Vec<PackageSet>> {
-    Ok(Json(flake::package_sets(&root_of(&q.path))))
+    Ok(Json(flake::package_sets(&root_of(&q.path)?)))
 }
 
 async fn wizard_recipes() -> ApiResult<Vec<Recipe>> {
@@ -384,7 +554,7 @@ async fn wizard_render(Json(req): Json<RenderRequest>) -> ApiResult<RenderResult
 }
 
 async fn wizard_apply(Json(req): Json<ApplyChangesRequest>) -> ApiResult<NixFileView> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     let full = discover::resolve_inside(&root, &req.file)?;
     let source = std::fs::read_to_string(&full).map_err(|_| CoreError::NotFound(format!("{} not found", req.file)))?;
     if nixos_manager_core::nixparse::version_of(&source) != req.version {
@@ -396,11 +566,11 @@ async fn wizard_apply(Json(req): Json<ApplyChangesRequest>) -> ApiResult<NixFile
 }
 
 async fn flake_info(Query(q): Query<ConfigQuery>) -> ApiResult<FlakeInfo> {
-    Ok(Json(flake::info(&root_of(&q.path))?))
+    Ok(Json(flake::info(&root_of(&q.path)?)?))
 }
 
 async fn flake_edit(Json(req): Json<FlakeEditRequest>) -> ApiResult<FlakeInfo> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     let path = root.join("flake.nix");
     let source = std::fs::read_to_string(&path).map_err(|_| CoreError::NotFound("flake.nix not found".into()))?;
     if nixos_manager_core::nixparse::version_of(&source) != req.version {
@@ -412,7 +582,7 @@ async fn flake_edit(Json(req): Json<FlakeEditRequest>) -> ApiResult<FlakeInfo> {
 }
 
 async fn flake_convert(State(ctx): State<AppCtx>, Json(req): Json<ConvertToFlakeRequest>) -> ApiResult<FlakeInfo> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     let username = req.username.clone().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "user".into()));
     let r = if req.nixpkgs_ref.trim().is_empty() { flake::DEFAULT_NIXPKGS_REF.to_string() } else { req.nixpkgs_ref.clone() };
     flake::convert(&root, &req.hostname, &username, &r)?;
@@ -435,34 +605,34 @@ async fn channels_action(State(ctx): State<AppCtx>, Json(req): Json<ChannelActio
 }
 
 async fn secrets_status(State(ctx): State<AppCtx>, Query(q): Query<ConfigQuery>) -> ApiResult<SecretsStatus> {
-    Ok(Json(ctx.secrets.status(&root_of(&q.path)).await))
+    Ok(Json(ctx.secrets.status(&root_of(&q.path)?).await))
 }
 async fn secrets_create(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretsStatus> {
     let pw = r.password.ok_or_else(|| CoreError::Invalid("password is required".into()))?;
-    Ok(Json(ctx.secrets.create(&root_of(&r.path), &pw).await?))
+    Ok(Json(ctx.secrets.create(&root_of(&r.path)?, &pw).await?))
 }
 async fn secrets_unlock(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretsStatus> {
     let pw = r.password.ok_or_else(|| CoreError::Invalid("password is required".into()))?;
-    Ok(Json(ctx.secrets.unlock(&root_of(&r.path), &pw).await?))
+    Ok(Json(ctx.secrets.unlock(&root_of(&r.path)?, &pw).await?))
 }
 async fn secrets_lock(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretsStatus> {
-    Ok(Json(ctx.secrets.lock(&root_of(&r.path)).await))
+    Ok(Json(ctx.secrets.lock(&root_of(&r.path)?).await))
 }
 async fn secrets_get(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretEntry> {
     let name = r.name.ok_or_else(|| CoreError::Invalid("name is required".into()))?;
-    Ok(Json(ctx.secrets.get(&root_of(&r.path), &name).await?))
+    Ok(Json(ctx.secrets.get(&root_of(&r.path)?, &name).await?))
 }
 async fn secrets_set(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretsStatus> {
     let entry = r.entry.ok_or_else(|| CoreError::Invalid("entry is required".into()))?;
-    Ok(Json(ctx.secrets.set(&root_of(&r.path), entry).await?))
+    Ok(Json(ctx.secrets.set(&root_of(&r.path)?, entry).await?))
 }
 async fn secrets_remove(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretsStatus> {
     let name = r.name.ok_or_else(|| CoreError::Invalid("name is required".into()))?;
-    Ok(Json(ctx.secrets.remove(&root_of(&r.path), &name).await?))
+    Ok(Json(ctx.secrets.remove(&root_of(&r.path)?, &name).await?))
 }
 async fn secrets_change_password(State(ctx): State<AppCtx>, Json(r): Json<SecretsRequest>) -> ApiResult<SecretsStatus> {
     let pw = r.password.ok_or_else(|| CoreError::Invalid("password is required".into()))?;
-    Ok(Json(ctx.secrets.change_password(&root_of(&r.path), &pw).await?))
+    Ok(Json(ctx.secrets.change_password(&root_of(&r.path)?, &pw).await?))
 }
 
 async fn machine_disks() -> ApiResult<Vec<DiskInfo>> {
@@ -478,7 +648,7 @@ async fn generations() -> ApiResult<Vec<Generation>> {
 }
 
 async fn deploy_preflight(State(ctx): State<AppCtx>, Query(q): Query<ConfigQuery>) -> ApiResult<DeployPreflight> {
-    let root = root_of(&q.path);
+    let root = root_of(&q.path)?;
     let state = ctx.store.get().await;
     let pull = state.hardware_pulls.get(&root.to_string_lossy().to_string()).cloned();
     let mut p = deploy::preflight(&root, pull.as_ref()).await?;
@@ -507,7 +677,7 @@ async fn remote_check(State(ctx): State<AppCtx>, Json(req): Json<KeyAccessReques
 async fn remote_test(State(ctx): State<AppCtx>, Json(req): Json<RemoteTestRequest>) -> ApiResult<JobInfo> {
     let job = ctx.jobs.create("remote-test", &format!("Test connection to {}", req.ssh_target)).await;
     let id = job.id.clone();
-    tokio::spawn(remote::test_connection(job, req.ssh_target));
+    tokio::spawn(remote::test_connection(job, req.ssh_target, req.port));
     let info = ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?;
     Ok(Json(info))
 }
@@ -552,7 +722,7 @@ async fn deploy_start(State(ctx): State<AppCtx>, Json(req): Json<DeployRequest>)
 }
 
 async fn validate_start(State(ctx): State<AppCtx>, Json(req): Json<ValidateRequest>) -> ApiResult<JobInfo> {
-    let root = root_of(&req.path);
+    let root = root_of(&req.path)?;
     let job = ctx.jobs.create("validate", &format!("Validate {}", req.path)).await;
     let id = job.id.clone();
     tokio::spawn(validate::run(job, root, req.host));

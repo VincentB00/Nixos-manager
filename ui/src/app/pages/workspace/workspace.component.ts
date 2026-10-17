@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -19,10 +20,18 @@ import { FileTreeComponent } from './file-tree.component';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import type { FileSummary, SearchResult } from '../../api/generated';
 
+/** Manual light/dark override; "system" follows prefers-color-scheme. */
+export function applyTheme(t: 'system' | 'light' | 'dark') {
+  const root = document.documentElement;
+  if (t === 'system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', t);
+}
+try { applyTheme((localStorage.getItem('nixos-manager.theme') as 'system' | 'light' | 'dark') || 'system'); } catch { /* ignore */ }
+
 @Component({
   selector: 'app-workspace',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatSidenavModule, MatListModule, MatIconModule, MatButtonModule, MatMenuModule, MatProgressBarModule, MatTooltipModule, MatDialogModule, MatBadgeModule, MatButtonToggleModule, FileTreeComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatSidenavModule, MatListModule, MatIconModule, MatButtonModule, MatMenuModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective, MatDialogModule, MatBadgeModule, MatButtonToggleModule, FileTreeComponent],
   styles: [`
+    .pending { color: var(--nm-warning); margin-right: 6px; white-space: nowrap; }
     .search { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 16px; }
     .search input { flex: 1; min-width: 0; background: var(--mat-sys-surface-container); border: 1px solid var(--mat-sys-outline-variant); border-radius: 16px; padding: 6px 10px; color: inherit; font: inherit; font-size: .9em; outline: none; }
     .search input:focus { border-color: var(--mat-sys-primary); }
@@ -47,8 +56,9 @@ import type { FileSummary, SearchResult } from '../../api/generated';
   `],
   template: `
     <mat-toolbar>
+      <button mat-icon-button (click)="sidenavOpen.set(!sidenavOpen())" [matTooltip]="sidenavOpen() ? 'Hide the file list' : 'Show the file list'"><mat-icon>{{ sidenavOpen() ? 'menu_open' : 'menu' }}</mat-icon></button>
       <a mat-icon-button routerLink="/" matTooltip="Choose another folder"><mat-icon>home</mat-icon></a>
-      <span>Nixos-manager</span>
+      <a routerLink="overview" queryParamsHandling="merge" style="color:inherit; text-decoration:none">Nixos-manager</a>
       <span class="path mono muted">{{ ws.path() }}</span>
       <span class="spacer"></span>
       @if (hosts().length > 0) {
@@ -57,26 +67,38 @@ import type { FileSummary, SearchResult } from '../../api/generated';
         } }
         <button mat-button [matMenuTriggerFor]="hostMenu"><mat-icon>dns</mat-icon> {{ ws.selectedHost() ?? 'host' }}</button>
         <mat-menu #hostMenu="matMenu">
-          @for (h of hosts(); track h) { <button mat-menu-item (click)="ws.selectedHost.set(h)">{{ h }}</button> }
+          @for (h of hosts(); track h) { <button mat-menu-item (click)="ws.selectHost(h)">{{ h }}</button> }
         </mat-menu>
       }
+      <button mat-icon-button [matMenuTriggerFor]="themeMenu" matTooltip="Appearance"><mat-icon>{{ theme() === 'dark' ? 'dark_mode' : theme() === 'light' ? 'light_mode' : 'brightness_auto' }}</mat-icon></button>
+      <mat-menu #themeMenu="matMenu">
+        <button mat-menu-item (click)="setTheme('system')"><mat-icon>brightness_auto</mat-icon> Follow the system</button>
+        <button mat-menu-item (click)="setTheme('light')"><mat-icon>light_mode</mat-icon> Light</button>
+        <button mat-menu-item (click)="setTheme('dark')"><mat-icon>dark_mode</mat-icon> Dark</button>
+      </mat-menu>
       <button mat-icon-button (click)="ws.reload()" matTooltip="Rescan folder"><mat-icon>refresh</mat-icon></button>
       <a mat-icon-button routerLink="jobs" queryParamsHandling="merge" matTooltip="Jobs">
         <mat-icon [matBadge]="runningCount() || null" [class.running]="runningCount() > 0">assignment</mat-icon>
       </a>
+      @if (ws.buildStatus()?.changed_files?.length; as n) {
+        <button mat-button class="pending" (click)="build()" [matTooltip]="'Changed since the last successful build (' + (ws.buildStatus()!.last_build_at ?? '').slice(0, 16).replace('T', ' ') + '): ' + ws.buildStatus()!.changed_files.join(', ') + '. Press Build to apply.'"><mat-icon>pending_actions</mat-icon> {{ n }} {{ n === 1 ? 'change' : 'changes' }} to apply</button>
+      }
       <button mat-stroked-button (click)="validate()" matTooltip="Check syntax and evaluate the whole configuration without changing anything (no password needed)"><mat-icon>fact_check</mat-icon> Validate</button>
       <button mat-flat-button (click)="build()"><mat-icon>build</mat-icon> Build</button>
     </mat-toolbar>
     @if (ws.loading()) { <mat-progress-bar mode="indeterminate" /> }
 
     <mat-sidenav-container>
-      <mat-sidenav mode="side" opened>
+      <mat-sidenav [mode]="narrow() ? 'over' : 'side'" [opened]="sidenavOpen()" (closedStart)="sidenavOpen.set(false)" disableClose>
         <mat-nav-list>
           <a mat-list-item routerLink="overview" queryParamsHandling="merge" routerLinkActive="active">
             <mat-icon matListItemIcon>map</mat-icon><span matListItemTitle>Overview & map</span>
           </a>
           <a mat-list-item routerLink="secrets" queryParamsHandling="merge" routerLinkActive="active">
             <mat-icon matListItemIcon>key</mat-icon><span matListItemTitle>Secrets</span><span matListItemLine class="muted">encrypted logins for shares</span>
+          </a>
+          <a mat-list-item routerLink="system" queryParamsHandling="merge" routerLinkActive="active">
+            <mat-icon matListItemIcon>history</mat-icon><span matListItemTitle>System</span><span matListItemLine class="muted">generations · roll back · disk space</span>
           </a>
           <a mat-list-item routerLink="remote" queryParamsHandling="merge" routerLinkActive="active">
             <mat-icon matListItemIcon>lan</mat-icon><span matListItemTitle>Remote</span><span matListItemLine class="muted">deploy targets · remote builders</span>
@@ -97,11 +119,11 @@ import type { FileSummary, SearchResult } from '../../api/generated';
           }
           <div class="search">
             <mat-icon class="muted">search</mat-icon>
-            <input #searchBox type="text" placeholder="Find in files… (name or text)" [value]="searchQ()" (input)="search(searchBox.value)" (keyup.escape)="search(''); searchBox.value = ''" />
+            <input #searchBox type="text" placeholder="Find in files… (name or text)" aria-label="Find in files" [value]="searchQ()" (input)="search(searchBox.value)" (keydown.escape)="$event.stopPropagation(); search(''); searchBox.value = ''" />
             @if (searchQ()) { <button mat-icon-button (click)="search(''); searchBox.value = ''" matTooltip="Clear"><mat-icon>close</mat-icon></button> }
           </div>
           @if (searchQ()) {
-            <div class="group">{{ searching() ? 'Searching…' : (searchRes()?.files?.length ?? 0) + ' file(s) match' }}{{ searchRes()?.truncated ? ' (more hits not shown)' : '' }}</div>
+            <div class="group">{{ searching() ? 'Searching…' : plural(searchRes()?.files?.length ?? 0, 'file') + ' match' + ((searchRes()?.files?.length ?? 0) === 1 ? 'es' : '') }}{{ searchRes()?.truncated ? ' (more hits not shown)' : '' }}</div>
             @for (f of searchRes()?.files ?? []; track f.rel_path) {
               <a mat-list-item class="file-item" [routerLink]="f.rel_path.endsWith('flake.nix') ? 'flake' : 'file'" [queryParams]="{ f: f.rel_path, line: null }" queryParamsHandling="merge" [matTooltip]="f.rel_path" matTooltipPosition="right">
                 <span matListItemTitle>{{ f.rel_path }}@if (f.name_match) { <span class="tag" style="margin-left:6px">name</span> }</span>
@@ -177,15 +199,26 @@ export class WorkspaceComponent implements OnInit {
   runningCount = computed(() => [...this.jobs.jobs().values()].filter(j => j.info.status === 'running' || j.info.status === 'pending').length);
 
   ngOnInit() {
+    this.mq?.addEventListener('change', this.mqHandler);
     this.route.queryParamMap.subscribe(q => {
       const path = q.get('path');
       if (!path) { this.router.navigate(['/']); return; }
       const view = q.get('view');
       if (view === 'tree' || view === 'list') this.setViewMode(view);
       if (this.ws.path() !== path) this.ws.open(path);
+      if (q.get('build')) {
+        // "press Build" shortcut from a snackbar
+        this.router.navigate([], { relativeTo: this.route, queryParams: { build: null }, queryParamsHandling: 'merge', replaceUrl: true });
+        setTimeout(() => this.build(), 300);
+      }
     });
   }
 
+  /** Narrow screens get an overlay drawer with a toolbar toggle. */
+  narrow = signal(typeof window !== 'undefined' && window.matchMedia('(max-width: 1000px)').matches);
+  sidenavOpen = signal(!this.narrow());
+  private mq = typeof window !== 'undefined' ? window.matchMedia('(max-width: 1000px)') : null;
+  private mqHandler = (e: MediaQueryListEvent) => { this.narrow.set(e.matches); this.sidenavOpen.set(!e.matches); };
   searchQ = signal('');
   searchRes = signal<SearchResult | null>(null);
   searching = signal(false);
@@ -205,6 +238,13 @@ export class WorkspaceComponent implements OnInit {
     }, 250);
   }
 
+  theme = signal<'system' | 'light' | 'dark'>((() => { try { return (localStorage.getItem('nixos-manager.theme') as 'system' | 'light' | 'dark') || 'system'; } catch { return 'system'; } })());
+  setTheme(t: 'system' | 'light' | 'dark') {
+    this.theme.set(t);
+    try { localStorage.setItem('nixos-manager.theme', t); } catch { /* private mode */ }
+    applyTheme(t);
+  }
+  plural(n: number, word: string): string { return `${n} ${word}${n === 1 ? '' : 's'}`; }
   gitLine(): string {
     const g = this.ws.gitInfo();
     if (!g?.is_repo) return '';

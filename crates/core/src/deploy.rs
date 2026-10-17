@@ -69,6 +69,9 @@ fn action_arg(a: RebuildAction) -> &'static str {
 pub fn build_host_block(t: &DeployTarget, app_key: &Path) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
     let mut opts = format!("-F {h}/.ssh/config -o UserKnownHostsFile={h}/.ssh/known_hosts", h = sh_quote(&home).trim_matches('\'').to_string());
+    if let Some(p) = t.port.filter(|p| *p != 22) {
+        opts.push_str(&format!(" -p {p}"));
+    }
     if app_key.is_file() {
         opts.push_str(&format!(" -i {}", app_key.display()));
     }
@@ -606,7 +609,7 @@ mod tests {
 
     #[test]
     fn build_host_script_shape() {
-        let t = DeployTarget { name: "laptop".into(), ssh_target: "vincent@lg".into(), flake_host: None, build_host: None, use_remote_sudo: true };
+        let t = DeployTarget { name: "laptop".into(), ssh_target: "vincent@lg".into(), flake_host: None, build_host: None, use_remote_sudo: true, port: None };
         let req = DeployRequest {
             path: "/home/u/nixos".into(),
             host: Some("main".into()),

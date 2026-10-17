@@ -64,8 +64,11 @@ impl StateStore {
     /// Record that `path` was opened (moves it to the top of recents).
     pub async fn touch_location(&self, path: &str, host: Option<String>) -> Result<AppState> {
         let now = chrono::Utc::now().to_rfc3339();
+        // one entry per folder whatever the spelling (trailing slash, symlinks)
+        let canon = std::fs::canonicalize(path).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| path.trim_end_matches('/').to_string());
+        let path = canon.as_str();
         self.update(|s| {
-            s.recent_locations.retain(|r| r.path != path);
+            s.recent_locations.retain(|r| r.path.trim_end_matches('/') != path && std::fs::canonicalize(&r.path).map(|p| p.to_string_lossy() != path).unwrap_or(true));
             s.recent_locations.insert(
                 0,
                 RecentLocation { path: path.to_string(), last_opened: now, host },

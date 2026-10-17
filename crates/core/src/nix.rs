@@ -5,6 +5,7 @@ use crate::process::run;
 use crate::types::{Generation, MachineInfo};
 use crate::Result;
 use std::path::Path;
+use crate::error::CoreError;
 use std::time::Duration;
 
 pub async fn machine_info() -> MachineInfo {
@@ -49,34 +50,32 @@ pub async fn flake_hosts(flake_dir: &Path) -> Result<Vec<String>> {
     Ok(hosts)
 }
 
-/// System generations from `nix-env --list-generations -p /nix/var/nix/profiles/system`.
+/// System generations, read from the profile symlinks
+/// `/nix/var/nix/profiles/system-<n>-link` (no lock file, works for any user;
+/// `nix-env --list-generations` needs write access to the profile directory).
 pub async fn generations() -> Result<Vec<Generation>> {
-    let out = run(
-        "nix-env",
-        &["--list-generations", "-p", "/nix/var/nix/profiles/system"],
-        None,
-        Duration::from_secs(30),
-    )
-    .await?;
+    let dir = Path::new("/nix/var/nix/profiles");
+    let current_target = std::fs::read_link(dir.join("system")).ok();
     let mut gens = Vec::new();
-    for line in out.stdout.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let number: u32 = match parts[0].parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let date = format!("{} {}", parts[1], parts[2]);
-        let current = line.contains("(current)");
-        let link = format!("/nix/var/nix/profiles/system-{number}-link");
-        let nixos_version = std::fs::read_to_string(format!("{link}/nixos-version")).ok().map(|s| s.trim().to_string());
-        let kernel = std::fs::read_link(format!("{link}/kernel"))
-            .ok()
-            .and_then(|p| p.to_string_lossy().split('/').nth(3).map(|s| s.to_string()));
+    let rd = std::fs::read_dir(dir).map_err(|e| CoreError::Other(format!("cannot read {}: {e}", dir.display())))?;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(num) = name.strip_prefix("system-").and_then(|r| r.strip_suffix("-link")) else { continue };
+        let Ok(number) = num.parse::<u32>() else { continue };
+        let link = e.path();
+        let meta = std::fs::symlink_metadata(&link).ok();
+        let date = meta
+            .and_then(|m| m.modified().ok())
+            .map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default();
+        let current = current_target.as_deref().map(|t| t == Path::new(&name) || t == link.as_path()).unwrap_or(false);
+        let nixos_version = std::fs::read_to_string(link.join("nixos-version")).ok().map(|s| s.trim().to_string());
+        let kernel = std::fs::read_link(link.join("kernel")).ok().and_then(|k| {
+            // /nix/store/<hash>-linux-6.12.3/bzImage → "linux-6.12.3"
+            k.components().rev().nth(1).map(|c| c.as_os_str().to_string_lossy().to_string()).map(|n| n.splitn(2, '-').nth(1).unwrap_or(&n).to_string())
+        });
         gens.push(Generation { number, date, current, nixos_version, kernel });
     }
-    gens.reverse();
+    gens.sort_by(|a, b| b.number.cmp(&a.number));
     Ok(gens)
 }

@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { SlicePipe } from '@angular/common';
@@ -17,7 +18,7 @@ import type { FlakeInfo, FlakeInput, FlakeOp, FlakeVar } from '../../api/generat
 /** Dedicated view for flake.nix: main nixpkgs, extra package sets, inputs, global vars, hosts. */
 @Component({
   selector: 'app-flake',
-  imports: [RouterLink, SlicePipe, MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MatMenuModule],
+  imports: [RouterLink, SlicePipe, MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective, MatMenuModule],
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     h2 { margin: 0; font-weight: 400; }
@@ -37,6 +38,9 @@ import type { FlakeInfo, FlakeInput, FlakeOp, FlakeVar } from '../../api/generat
   `],
   template: `
     @if (busy()) { <mat-progress-bar mode="indeterminate" /> }
+    @if (ws.overview()?.location?.kind === 'legacy') {
+      <div class="warning-box"><mat-icon>info</mat-icon><span>This configuration does not use flakes, so this page does not apply. Package sources are managed on the <a routerLink="../channels" queryParamsHandling="merge">Channels</a> page, which can also convert the configuration to a flake.</span></div>
+    }
     <div class="head">
       <h2 class="mono">flake.nix</h2>
       @if (info()?.description) { <span class="muted">{{ info()!.description }}</span> }
@@ -146,7 +150,7 @@ import type { FlakeInfo, FlakeInput, FlakeOp, FlakeVar } from '../../api/generat
 })
 export class FlakeComponent implements OnInit {
   private api = inject(ApiService);
-  private ws = inject(WorkspaceService);
+  ws = inject(WorkspaceService);
   private dialog = inject(MatDialog);
   private snack = inject(MatSnackBar);
 

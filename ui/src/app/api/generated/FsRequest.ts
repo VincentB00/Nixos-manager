@@ -16,4 +16,8 @@ recursive: boolean | null,
 /**
  * Rename: rewrite path literals in files that import/reference the target (default true).
  */
-update_references: boolean | null, };
+update_references: boolean | null, 
+/**
+ * Delete: also remove `imports` entries pointing at the target (default false).
+ */
+remove_references: boolean | null, };

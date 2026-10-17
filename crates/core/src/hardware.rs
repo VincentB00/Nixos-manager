@@ -72,6 +72,9 @@ fn sync_inner(workdir: &Path, system_file: &Path, pull: Option<&HardwarePull>) -
     let rel = rel_path_in(workdir);
     let rel_s = rel.to_string_lossy().to_string();
     let done = |status: HardwareSyncStatus, message: String| HardwareSync { status, rel_path: rel_s.clone(), message, lock_removed: false };
+    if !workdir.is_dir() {
+        return done(HardwareSyncStatus::Skipped, "the working folder does not exist".into());
+    }
     if same_dir(workdir, Path::new(ETC_NIXOS)) {
         return done(HardwareSyncStatus::Skipped, "the working folder is /etc/nixos itself".into());
     }
@@ -97,8 +100,14 @@ fn sync_inner(workdir: &Path, system_file: &Path, pull: Option<&HardwarePull>) -
 }
 
 fn write(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // only sub-folders of an existing working folder are created, never the folder itself
     if let Some(p) = dest.parent() {
-        std::fs::create_dir_all(p)?;
+        if !p.exists() {
+            match p.parent() {
+                Some(pp) if pp.is_dir() => std::fs::create_dir_all(p)?,
+                _ => return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "working folder does not exist")),
+            }
+        }
     }
     std::fs::write(dest, bytes)
 }

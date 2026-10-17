@@ -336,3 +336,52 @@ fake /etc/nixos (unshare -rm) so the real sync script runs end to end.
   with check_sudo at job start when given). Respects "also on failure";
   never after a manual stop (130). The dialog shows the optional local
   sudo password field only when a local action is chosen.
+
+## System page for targets (2026-10-17, Vincent)
+`GET /api/system/remote?target=` → `system::remote_info`: one ssh
+(`bash -s` with REMOTE_INFO_SCRIPT) prints `host=`, `gen=n|mtime|current|
+version|kernel` per `/nix/var/nix/profiles/system-*-link` and `df=` for
+/nix/store — no root needed. `POST /api/system/remote/rollback|gc
+{target, value, password}` → jobs `remote_rollback` / `remote_gc` through
+`run_remote_root`: root login → `ssh T bash -s <<script`; otherwise the
+password is the first stdin line and the script follows:
+`{ printf pw; cat <<script; } | ssh T "sudo -S -p '' bash -s"`. UI: a
+"Machine" select on the System page; for a target the page runs the usual
+remote check and only asks for a password when the SSH user is neither root
+nor passwordless-sudo (the confirmation dialog then has no password field).
+
+## Target dialog: host / user / port (2026-10-17, Vincent)
+`DeployTarget.port: Option<u16>` (None = 22). The dialog edits Host, User and
+Port separately and stores `user@host` in `ssh_target` (+ `port`); user
+`root` unticks "use sudo". Every local script that talks to a target starts
+with `remote::port_prelude(port)` = `NM_SSH_OPTS="${NM_SSH_OPTS:-} -p N"`,
+and `remote_script` folds `$NM_SSH_OPTS` into `NIX_SSHOPTS`, so ssh, rsync
+(`-e "$SSH"`), nixos-rebuild --target-host/--build-host and `nix copy` all
+use the port (test `port_reaches_every_ssh_call`). `/api/remote/test` takes
+`port` too. The per-target "Build host" field was removed from the dialog
+(the build dialog's "Build on" selector and the on-target mode replaced it;
+the `build_host` field stays in the type for old state files).
+
+## Builds for other machines + plain GC (2026-10-17, Vincent)
+Why: "build here, deploy there" leaves the target's whole system closure in
+the LOCAL store; once the staged copy is gone nothing roots it, so it is
+garbage until a GC runs. `system::other_systems()` lists
+`/nix/store/*-nixos-system-*` (not .drv) that no local generation,
+/run/current-system or /run/booted-system points at; per entry: host and
+version parsed from the name, closure size (`nix-store -qR` + batched
+`nix-store -q --size`), mtime, and `nix-store --query --roots` (non-empty =
+still alive, e.g. a stale `result` link → shown, delete disabled).
+`POST /api/system/delete-paths {paths, password, gc_after}` → root job:
+`nix-store --delete <paths>` then optionally `nix-collect-garbage` to sweep
+the dependencies. System page card "Builds for other machines" (local only)
+with per-row Delete and Delete all.
+GC now has three modes (`GcRequest.keep_generations` /
+`RemoteSystemRequest.keep_generations`): keep all generations (plain
+`nix-collect-garbage`, the "Collect garbage" primary button), older than
+N days, or all old generations (`-d`). Same on targets.
+- Same for targets (same day): `GET /api/system/remote/other-systems?target=`
+  runs REMOTE_OTHERS_SCRIPT on the target (nix-store -qR / --size / --roots
+  there, `other=path|closure|exclusive|roots;` lines parsed with
+  parse_system_name) and `POST /api/system/remote/delete-paths {target,
+  paths, password, gc_after}` deletes through `run_remote_root`. The System
+  page card follows the Machine selector.

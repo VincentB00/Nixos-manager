@@ -103,6 +103,8 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
   language = input<string>('nix');
   height = input<string>('60vh');
   readOnly = input<boolean>(false);
+  /** Problems to underline (1-based lines/columns). */
+  markers = input<{ line: number; column: number; endLine?: number; endColumn?: number; message: string }[]>([]);
   valueChange = output<string>();
   /** Ctrl+S / Cmd+S pressed inside the editor. */
   save = output<void>();
@@ -114,6 +116,15 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
   private suppress = false;
 
   constructor() {
+    effect(() => {
+      const ms = this.markers();
+      const model = this.editor?.getModel();
+      if (!model) return;
+      monaco.editor.setModelMarkers(model, 'nix', ms.map(m => ({
+        startLineNumber: m.line, startColumn: m.column, endLineNumber: m.endLine ?? m.line, endColumn: m.endColumn ?? m.column + 1,
+        message: m.message, severity: monaco.MarkerSeverity.Error,
+      })));
+    });
     // push external value changes into the editor without clobbering the caret on our own edits
     effect(() => {
       const v = this.value();
@@ -148,6 +159,9 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
     // Ctrl+S saves instead of opening the browser's "save page" dialog
     this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.save.emit());
     this.ready.emit();
+    // markers set before the editor existed
+    const ms = this.markers();
+    if (ms.length) monaco.editor.setModelMarkers(this.editor.getModel()!, 'nix', ms.map(m => ({ startLineNumber: m.line, startColumn: m.column, endLineNumber: m.endLine ?? m.line, endColumn: m.endColumn ?? m.column + 1, message: m.message, severity: monaco.MarkerSeverity.Error })));
     this.editor.onDidChangeModelContent(() => {
       this.suppress = true;
       try { this.valueChange.emit(this.editor!.getValue()); } finally { this.suppress = false; }

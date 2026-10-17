@@ -64,6 +64,9 @@ pub struct DeployTarget {
     pub build_host: Option<String>,
     /// Pass --sudo for activation (needed when ssh_target is not root).
     pub use_remote_sudo: bool,
+    /// SSH port when not 22 (passed as `-p` to every ssh/rsync call).
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -394,6 +397,9 @@ pub struct FsRequest {
     pub recursive: Option<bool>,
     /// Rename: rewrite path literals in files that import/reference the target (default true).
     pub update_references: Option<bool>,
+    /// Delete: also remove `imports` entries pointing at the target (default false).
+    #[serde(default)]
+    pub remove_references: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1104,6 +1110,8 @@ pub struct ValidateRequest {
 #[ts(export)]
 pub struct RemoteTestRequest {
     pub ssh_target: String,
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1288,4 +1296,150 @@ pub struct SearchResult {
     pub files: Vec<SearchFile>,
     /// Some matches were left out (limits reached).
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitRemoteRequest {
+    pub path: String,
+    pub name: String,
+    pub url: String,
+}
+
+// ───────────────────────── system page / build status ─────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StoreUsage {
+    #[ts(type = "number")]
+    pub size: u64,
+    #[ts(type = "number")]
+    pub used: u64,
+    #[ts(type = "number")]
+    pub avail: u64,
+    pub generations: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RollbackRequest {
+    pub number: u32,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GcRequest {
+    /// 0 = every generation but the current one.
+    pub older_than_days: u32,
+    pub password: String,
+    /// Keep every generation: only free store paths nothing references (plain nix-collect-garbage).
+    #[serde(default)]
+    pub keep_generations: bool,
+}
+
+/// Copy /etc/nixos into a writable working folder.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StartFromSystemRequest {
+    /// Destination folder (created; must not exist or be empty).
+    pub dest: String,
+    pub git_init: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SetHostRequest {
+    pub path: String,
+    pub host: Option<String>,
+}
+
+/// What changed in the working copy since the last successful build of it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BuildStatus {
+    /// RFC 3339 start time of the last successful build/deploy of this folder, if known.
+    pub last_build_at: Option<String>,
+    pub last_build_title: Option<String>,
+    /// .nix files modified after that build (relative paths).
+    pub changed_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PopularPackage {
+    pub attr: String,
+    pub title: String,
+    pub description: String,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitDiscardRequest {
+    pub path: String,
+    /// Null = everything (git reset --hard).
+    pub files: Option<Vec<String>>,
+    /// With `files` = null: also delete untracked files and folders (git clean -fd).
+    #[serde(default)]
+    pub clean_untracked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RemoteSystemInfo {
+    pub target: String,
+    pub hostname: Option<String>,
+    pub generations: Vec<Generation>,
+    pub store: Option<StoreUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RemoteSystemRequest {
+    pub target: String,
+    /// Generation number (rollback) or days (gc).
+    pub value: u32,
+    /// sudo password on the target; empty when root or passwordless sudo.
+    pub password: Option<String>,
+    /// gc only: keep every generation (plain nix-collect-garbage).
+    #[serde(default)]
+    pub keep_generations: bool,
+}
+
+/// A NixOS system closure in the local store that no local generation uses
+/// (typically a "build here, deploy there" result for another machine).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OtherSystem {
+    pub path: String,
+    pub host: String,
+    pub nixos_version: String,
+    /// Bytes of the whole closure (shared parts included, so sums overlap).
+    #[ts(type = "number")]
+    pub closure_size: u64,
+    /// Bytes used only by this build: not in any local generation's closure
+    /// (what a deletion plus garbage collection would free at most).
+    #[ts(type = "number")]
+    pub exclusive_size: u64,
+    /// GC roots still pointing at it (a `result` link, a profile…); empty = can be deleted.
+    pub roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DeletePathsRequest {
+    pub paths: Vec<String>,
+    pub password: String,
+    /// Run a garbage collection afterwards so the closure's now-unreferenced dependencies go too.
+    pub gc_after: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RemoteDeletePathsRequest {
+    pub target: String,
+    pub paths: Vec<String>,
+    pub password: Option<String>,
+    pub gc_after: bool,
 }

@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, computed, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -13,7 +14,7 @@ interface TreeRow { file: string; depth: number; enabled: boolean; via: ImportRe
 
 @Component({
   selector: 'app-overview',
-  imports: [RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatTooltipModule],
+  imports: [RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 16px; }
     .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: .9em; margin: 0; }
@@ -43,7 +44,7 @@ interface TreeRow { file: string; depth: number; enabled: boolean; via: ImportRe
               <dt>Hosts</dt><dd>{{ ov.location.hosts.length ? ov.location.hosts.join(', ') : (ov.location.kind === 'legacy' ? 'this machine' : 'none found statically') }}</dd>
               <dt>Nix files</dt><dd>{{ ws.nixFiles().length }}</dd>
               <dt>Hardware config</dt><dd>{{ ov.location.has_hardware_config ? 'present' : 'missing here (copied from /etc/nixos on sync)' }}</dd>
-              <dt>flake.lock</dt><dd>{{ ov.location.has_flake_lock ? 'present (stray: it belongs in /etc/nixos only and is removed when the folder is opened)' : 'kept in /etc/nixos only' }}</dd>
+              <dt>flake.lock</dt><dd>{{ ov.location.is_etc_nixos ? (ov.location.has_flake_lock ? 'present (pinned inputs)' : 'none yet (created by the first build)') : ov.location.has_flake_lock ? 'present (stray: it belongs in /etc/nixos only and is removed when the folder is opened)' : 'kept in /etc/nixos only' }}</dd>
               <dt>Writable</dt><dd>{{ ov.location.writable ? 'yes' : 'no — edits will fail' }}</dd>
             </dl>
             @if (ov.location.kind === 'legacy') {
@@ -124,7 +125,8 @@ export class OverviewComponent {
       const s = map.get(file);
       for (const imp of s?.imports ?? []) walk(imp.target, depth + 1, imp.enabled, imp.via, imp.exists);
     };
-    for (const root of ov.roots) walk(root, 0, true, 'imports', true);
+    // orphan files are listed under "Not imported anywhere"; only real roots start a tree
+    for (const root of ov.roots.filter(r => r === ov.location.entry_file || !ov.unreachable.includes(r))) walk(root, 0, true, 'imports', true);
     return out;
   });
 }

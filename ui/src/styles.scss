@@ -1,5 +1,10 @@
 @use '@angular/material' as mat;
 @use '@xterm/xterm/css/xterm.css';
+// Fonts bundled locally so the UI works without internet (headless servers).
+@import 'material-symbols/outlined.css';
+@import '@fontsource/roboto/300.css';
+@import '@fontsource/roboto/400.css';
+@import '@fontsource/roboto/500.css';
 
 html {
   @include mat.theme((
@@ -16,17 +21,22 @@ html {
   color: var(--mat-sys-on-surface);
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    @include mat.theme((
-      color: (
-        primary: mat.$azure-palette,
-        tertiary: mat.$cyan-palette,
-        theme-type: dark,
-      ),
-    ));
-  }
+@mixin nm-dark {
+  @include mat.theme((
+    color: (
+      primary: mat.$azure-palette,
+      tertiary: mat.$cyan-palette,
+      theme-type: dark,
+    ),
+  ));
+  color-scheme: dark;
 }
+// dark when the OS prefers it (unless the user chose light), or when the user chose dark
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) { @include nm-dark; }
+}
+html[data-theme="dark"] { @include nm-dark; }
+html[data-theme="light"] { color-scheme: light; }
 
 html, body { height: 100%; margin: 0; }
 body { font-family: Roboto, "Helvetica Neue", sans-serif; }

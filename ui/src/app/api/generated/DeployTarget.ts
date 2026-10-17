@@ -20,4 +20,8 @@ build_host: string | null,
 /**
  * Pass --sudo for activation (needed when ssh_target is not root).
  */
-use_remote_sudo: boolean, };
+use_remote_sudo: boolean, 
+/**
+ * SSH port when not 22 (passed as `-p` to every ssh/rsync call).
+ */
+port: number | null, };

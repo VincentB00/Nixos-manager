@@ -29,10 +29,49 @@ pub fn mkdir(root: &Path, rel: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn delete(root: &Path, rel: &str, recursive: bool) -> Result<()> {
+/// Delete a file or folder. With `remove_references`, every enabled
+/// `imports = [ … ]` entry pointing at the deleted file (or into the deleted
+/// folder) is removed from the importing files first, so the configuration
+/// keeps evaluating. Returns the files that were edited.
+pub fn delete(root: &Path, rel: &str, recursive: bool, remove_references: bool) -> Result<Vec<String>> {
     check_name(rel)?;
     let full = resolve_inside(root, rel)?;
     let meta = std::fs::symlink_metadata(&full).map_err(|_| CoreError::NotFound(format!("{rel} not found")))?;
+    let mut updated = Vec::new();
+    if remove_references {
+        let gone = nixparse::normalize(Path::new(rel));
+        for (irel, _) in list_files(root) {
+            if !irel.ends_with(".nix") || nixparse::normalize(Path::new(&irel)).starts_with(&gone) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(root.join(&irel)) else { continue };
+            let parsed = Parsed::parse(text.clone());
+            let mut edits: Vec<(usize, usize)> = Vec::new();
+            for imp in nixparse::imports(&parsed, &irel, root) {
+                if !imp.enabled || imp.via != ImportVia::Imports {
+                    continue;
+                }
+                let t = nixparse::normalize(Path::new(&imp.target));
+                if t == gone || (meta.is_dir() && t.starts_with(&gone)) {
+                    if let Some((s, e)) = nixparse::parse_node_id(&imp.node_id) {
+                        edits.push((s, e));
+                    }
+                }
+            }
+            if edits.is_empty() {
+                continue;
+            }
+            edits.sort_by(|a, b| b.0.cmp(&a.0));
+            let mut out = text;
+            for (s, e) in edits {
+                let ed = crate::edit::remove_item_edit(&out, s, e);
+                let (rs, re): (usize, usize) = (ed.range.start().into(), ed.range.end().into());
+                out.replace_range(rs..re, &ed.text);
+            }
+            crate::edit::write_atomic(&root.join(&irel), &out)?;
+            updated.push(irel);
+        }
+    }
     if meta.is_dir() {
         if recursive {
             std::fs::remove_dir_all(&full)?;
@@ -45,7 +84,7 @@ pub fn delete(root: &Path, rel: &str, recursive: bool) -> Result<()> {
     } else {
         std::fs::remove_file(&full)?;
     }
-    Ok(())
+    Ok(updated)
 }
 
 pub fn duplicate(root: &Path, rel: &str, to: &str) -> Result<()> {
@@ -196,6 +235,22 @@ mod tests {
     }
 
     #[test]
+    fn delete_can_remove_imports() {
+        let d = std::env::temp_dir().join(format!("nm-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("modules")).unwrap();
+        std::fs::write(d.join("configuration.nix"), "{ ... }: {\n  imports = [\n    ./modules/a.nix\n    ./modules/b.nix # keep\n  ];\n}\n").unwrap();
+        std::fs::write(d.join("modules/a.nix"), "{ }\n").unwrap();
+        std::fs::write(d.join("modules/b.nix"), "{ }\n").unwrap();
+        let updated = delete(&d, "modules/a.nix", false, true).unwrap();
+        assert_eq!(updated, vec!["configuration.nix".to_string()]);
+        let cfg = std::fs::read_to_string(d.join("configuration.nix")).unwrap();
+        assert!(!cfg.contains("a.nix") && cfg.contains("./modules/b.nix # keep"), "{cfg}");
+        assert!(!d.join("modules/a.nix").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn rename_file_updates_importers() {
         let d = setup();
         let r = d.path();
@@ -227,8 +282,8 @@ mod tests {
         let r = d.path();
         mkdir(r, "new/dir").unwrap();
         assert!(r.join("new/dir").is_dir());
-        assert!(delete(r, "new", false).is_err());
-        delete(r, "new", true).unwrap();
+        assert!(delete(r, "new", false, false).is_err());
+        delete(r, "new", true, false).unwrap();
         duplicate(r, "modules/b.nix", "modules/c.nix").unwrap();
         assert!(r.join("modules/c.nix").is_file());
         assert!(mkdir(r, "../x").is_err());

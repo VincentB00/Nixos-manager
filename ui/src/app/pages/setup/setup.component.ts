@@ -1,3 +1,6 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
+import { MatDialog } from '@angular/material/dialog';
+import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
@@ -16,7 +19,7 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
 
 @Component({
   selector: 'app-setup',
-  imports: [FormsModule, SlicePipe, MatButtonModule, MatCardModule, MatFormFieldModule, MatIconModule, MatInputModule, MatListModule, MatProgressBarModule, MatTooltipModule],
+  imports: [FormsModule, SlicePipe, MatButtonModule, MatCardModule, MatFormFieldModule, MatIconModule, MatInputModule, MatListModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     :host { display: block; min-height: 100%; padding: 32px 16px; box-sizing: border-box; }
     .wrap { max-width: 880px; margin: 0 auto; display: grid; gap: 16px; min-width: 0; }
@@ -87,6 +90,7 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
                   <mat-icon matListItemIcon>{{ s.kind === 'flake' ? 'ac_unit' : 'description' }}</mat-icon>
                   <span matListItemTitle class="mono">{{ s.path }}</span>
                   <span matListItemLine class="muted"><span class="kind">{{ s.kind }}</span> · {{ s.reason }}</span>
+                  @if (s.path === '/etc/nixos') { <button mat-stroked-button matListItemMeta (click)="startFromSystem($event)" matTooltip="Copy /etc/nixos into a folder in your home that you can edit; Build copies it back and rebuilds"><mat-icon>content_copy</mat-icon> Start from this</button> }
                 </a>
               }
             </mat-nav-list>
@@ -135,6 +139,7 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
   `,
 })
 export class SetupComponent implements OnInit {
+  private dialog = inject(MatDialog);
   private api = inject(ApiService);
   private router = inject(Router);
   private ws = inject(WorkspaceService);
@@ -186,6 +191,22 @@ export class SetupComponent implements OnInit {
         this.router.navigate(['/w', 'overview'], { queryParams: { path: info.path } });
       },
       error: (e: ApiFailure) => { this.opening.set(false); this.error.set(e.message); },
+    });
+  }
+
+  startFromSystem(ev: Event) {
+    ev.stopPropagation();
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '560px', data: {
+      title: 'Start from this machine\'s configuration',
+      message: 'The live configuration in /etc/nixos is owned by root, so it cannot be edited directly. It is copied into the folder below (flake.lock stays in /etc/nixos). You edit the copy; Build copies it back and rebuilds the system.',
+      label: 'Folder for the copy', value: '~/nixos', okLabel: 'Copy and open', checkbox: { label: 'Make it a git repository (recommended: history and undo)', checked: true },
+    } }).afterClosed().subscribe(r => {
+      if (!r?.value.trim()) return;
+      this.opening.set(true);
+      this.api.startFromSystem(r.value.trim(), r.checked).subscribe({
+        next: info => { this.opening.set(false); this.router.navigate(['/w', 'overview'], { queryParams: { path: info.path } }); },
+        error: (e: ApiFailure) => { this.opening.set(false); this.error.set(e.message); },
+      });
     });
   }
 

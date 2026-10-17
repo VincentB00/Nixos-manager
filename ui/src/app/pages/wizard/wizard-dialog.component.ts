@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NgTemplateOutlet, SlicePipe } from '@angular/common';
@@ -14,7 +15,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { Subject, debounceTime, distinctUntilChanged, switchMap, of, catchError } from 'rxjs';
 import { ApiService, ApiFailure } from '../../api/api.service';
 import { WorkspaceService } from '../../core/workspace.service';
-import type { ConfigChange, DiskInfo, NixFileView, OptionDoc, OptionsStatus, PackageInfo, PackageSet, PartitionInfo, Recipe, RecipeField, SecretsStatus } from '../../api/generated';
+import type { ConfigChange, DiskInfo, NixFileView, OptionDoc, OptionsStatus, PackageInfo, PackageSet, PartitionInfo, PopularPackage, Recipe, RecipeField, SecretsStatus } from '../../api/generated';
 
 type Category = 'programs' | 'feature' | 'option' | 'custom';
 type Step = 'pick' | 'details' | 'preview';
@@ -28,7 +29,7 @@ export interface WizardData {
 /** Guided "Add something to this module" flow. Returns the new NixFileView when something was applied. */
 @Component({
   selector: 'app-wizard-dialog',
-  imports: [FormsModule, NgTemplateOutlet, SlicePipe, MatDialogModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, MatSlideToggleModule, MatTooltipModule],
+  imports: [FormsModule, NgTemplateOutlet, SlicePipe, MatDialogModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, MatSlideToggleModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     mat-dialog-content { min-height: 420px; }
     .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
@@ -107,6 +108,10 @@ export interface WizardData {
             </mat-form-field>
             @if (selectedPkgs().length) {
               <div class="chips">@for (p of selectedPkgs(); track p.attr + p.set) { <span class="chip">{{ p.set !== 'pkgs' ? p.set + '.' : '' }}{{ p.attr }} <button mat-icon-button (click)="togglePkg(p)"><mat-icon>close</mat-icon></button></span> }</div>
+            }
+            @if (pkgQuery().length < 2 && popular().length) {
+              <div class="muted" style="margin:4px 0 6px; font-size:.85em">Popular programs — click to add:</div>
+              <div class="chips" style="margin-bottom:10px">@for (p of popular(); track p.attr) { <button class="chip" type="button" (click)="pickPopular(p)" [matTooltip]="p.description + ' · ' + p.attr">{{ p.title }}</button> }</div>
             }
             <div class="list">
               @for (p of pkgResults(); track p.attr) {
@@ -355,6 +360,10 @@ export class WizardDialogComponent implements OnInit {
   // programs
   pkgQuery = signal('');
   pkgResults = signal<PackageInfo[]>([]);
+  popular = signal<PopularPackage[]>([]);
+  pickPopular(p: PopularPackage) {
+    this.togglePkg({ attr: p.attr, pname: p.attr, version: '', description: p.description } as PackageInfo);
+  }
   selectedPkgs = signal<(PackageInfo & { set: string })[]>([]);
   pkgSlowHint = signal(false);
   pkgSearch$ = new Subject<string>();
@@ -389,6 +398,7 @@ export class WizardDialogComponent implements OnInit {
   };
 
   ngOnInit() {
+    this.api.packagesPopular().subscribe({ next: p => this.popular.set(p), error: () => {} });
     this.api.recipes().subscribe(r => this.recipes.set(r.filter(x => x.id !== 'custom')));
     this.api.optionsStatus().subscribe(s => this.optStatus.set(s));
     this.pkgSearch$.pipe(debounceTime(350), distinctUntilChanged(), switchMap(q => {

@@ -1,3 +1,5 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
+import { RouterLink } from '@angular/router';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -15,7 +17,7 @@ import type { ChannelAction, ChannelEntry, ChannelScope, ChannelsInfo } from '..
 /** Classic configs: view and manage nix channels, or switch to flakes. */
 @Component({
   selector: 'app-channels',
-  imports: [MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule],
+  imports: [RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
     h2 { margin: 0; font-weight: 400; }
@@ -36,6 +38,7 @@ import type { ChannelAction, ChannelEntry, ChannelScope, ChannelsInfo } from '..
     <p class="muted">Without a flake, NixOS takes its packages from <b>channels</b>: named snapshots of the package collection that you update by hand. The <code>nixos</code> system channel decides which NixOS version you run.</p>
 
     <div class="cards">
+      @if (ws.overview()?.location?.kind !== 'flake') {
       <mat-card appearance="outlined" class="hero">
         <mat-card-header><mat-card-title>Switch to flakes (recommended)</mat-card-title></mat-card-header>
         <mat-card-content>
@@ -43,6 +46,9 @@ import type { ChannelAction, ChannelEntry, ChannelScope, ChannelsInfo } from '..
         </mat-card-content>
         <mat-card-actions><button mat-flat-button (click)="convert()"><mat-icon>ac_unit</mat-icon> Switch to flakes</button></mat-card-actions>
       </mat-card>
+      } @else {
+      <div class="note"><mat-icon>ac_unit</mat-icon><span>This configuration already uses flakes: package sources come from the inputs on the <a routerLink="../flake" queryParamsHandling="merge">Flake</a> page. The channel actions below only matter for tools that still read channels.</span></div>
+      }
 
       <mat-card appearance="outlined">
         <mat-card-header><mat-card-title>System channels</mat-card-title><mat-card-subtitle>used by nixos-rebuild (root)</mat-card-subtitle></mat-card-header>
@@ -83,7 +89,7 @@ import type { ChannelAction, ChannelEntry, ChannelScope, ChannelsInfo } from '..
 })
 export class ChannelsComponent implements OnInit {
   private api = inject(ApiService);
-  private ws = inject(WorkspaceService);
+  ws = inject(WorkspaceService);
   private dialog = inject(MatDialog);
   private router = inject(Router);
 

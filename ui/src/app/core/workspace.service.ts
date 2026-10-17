@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ApiService, ApiFailure } from '../api/api.service';
-import type { ConfigOverview, FileSummary, FlakeVar, GitInfo, PackageSet } from '../api/generated';
+import type { BuildStatus, ConfigOverview, FileSummary, FlakeVar, GitInfo, PackageSet } from '../api/generated';
 
 /** The currently opened configuration folder and its discovery result. */
 @Injectable({ providedIn: 'root' })
@@ -19,6 +19,22 @@ export class WorkspaceService {
   readonly flakeVars = signal<FlakeVar[]>([]);
   /** Git state of the folder (null until loaded; is_repo=false when not a repository). */
   readonly gitInfo = signal<GitInfo | null>(null);
+  /** Files changed since the last successful build of this folder (toolbar chip). */
+  readonly buildStatus = signal<BuildStatus | null>(null);
+  private storedHost: string | null = null;
+
+  /** Pick the host to build and remember it for this folder. */
+  selectHost(h: string | null) {
+    this.selectedHost.set(h);
+    const path = this.path();
+    if (path) this.api.setHost(path, h).subscribe({ error: () => {} });
+  }
+
+  refreshBuildStatus() {
+    const path = this.path();
+    if (!path) return;
+    this.api.buildStatus(path).subscribe({ next: b => this.buildStatus.set(b), error: () => this.buildStatus.set(null) });
+  }
   readonly packageSets = signal<PackageSet[]>([{ name: 'pkgs', label: 'main', input: null, flake_ref: null, is_default: true, bits32: false }]);
 
   readonly nixFiles = computed(() => (this.overview()?.files ?? []).filter(f => f.rel_path.endsWith('.nix')));
@@ -62,6 +78,16 @@ export class WorkspaceService {
     this.error.set(null);
     this.api.packageSets(path).subscribe({ next: sets => this.packageSets.set(sets), error: () => {} });
     this.api.gitInfo(path).subscribe({ next: g => this.gitInfo.set(g), error: () => this.gitInfo.set(null) });
+    this.refreshBuildStatus();
+    this.api.state().subscribe({
+      next: st => {
+        const canon = path.replace(/\/+$/, '');
+        this.storedHost = st.recent_locations.find(r => r.path.replace(/\/+$/, '') === canon)?.host ?? null;
+        const hosts = this.overview()?.location.hosts ?? [];
+        if (this.storedHost && hosts.includes(this.storedHost)) this.selectedHost.set(this.storedHost);
+      },
+      error: () => {},
+    });
     this.api.flakeInfo(path).subscribe({ next: f => this.flakeVars.set(f.vars ?? []), error: () => this.flakeVars.set([]) });
     this.api.overview(path).subscribe({
       next: ov => {
@@ -71,7 +97,8 @@ export class WorkspaceService {
         const current = this.selectedHost();
         if (!current || !hosts.includes(current)) {
           const machineHost = ov.machine.hostname;
-          this.selectedHost.set(hosts.find(h => h === machineHost) ?? hosts[0] ?? null);
+          const stored = this.storedHost && hosts.includes(this.storedHost) ? this.storedHost : null;
+          this.selectedHost.set(stored ?? hosts.find(h => h === machineHost) ?? hosts[0] ?? null);
         }
       },
       error: (e: ApiFailure) => {

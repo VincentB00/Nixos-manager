@@ -183,3 +183,68 @@ path matched) and indented hit rows "<line> <snippet>". A hit opens the file
 view with `?line=N`: file-view switches to Code mode and the Monaco wrapper
 `revealLine()`s it (via the `ready` output when the editor is created later).
 Esc or the × clears the search.
+
+## 2026-10-17: fixes from the UI test report (.claude/tests/2026-10-17-ui-test-report.md)
+Full list in `.claude/tests/2026-10-17-ui-test-report-response.md`. Rules
+that came out of it:
+- Every path-taking API call goes through `fsbrowse::config_root` (exists,
+  dir, has flake.nix/configuration.nix, canonical). `root_of` in api.rs
+  returns `Result`; nothing ever creates the working folder. Relative input
+  resolves against `$HOME`, trailing slashes dropped, recent locations and
+  `hardware_pulls` keyed by canonical path.
+- Directory walks: `same_file_system`, skip `/proc /sys /dev /run
+  /nix/store /nix/var`, cap 20 000 entries, run in `spawn_blocking`
+  (overview, search). Opening `/` is a fast 4xx now.
+- Generations come from `/nix/var/nix/profiles/system-*-link` (no lock).
+- UI: `shared/tooltip-aria.directive.ts` (`[matTooltip]` → `aria-label`),
+  fonts bundled (`material-symbols`, `@fontsource/roboto`; no Google
+  Fonts), sidenav toggle + overlay mode below 1000 px (`disableClose`),
+  unsaved-code guard (`canDeactivate` on the `file` route +
+  `FileViewComponent.canLeave`), hardware-configuration.nix read-only
+  banner, number fields reject non-numbers, duplicate list items refused,
+  delete offers to remove imports (`remove_references`), job not-found note,
+  "First error" button on job logs, Start-disabled hint in the build dialog,
+  Git "add one" remote, Channels/Flake pages guard on config kind, overview
+  orphan rows only under "Not imported anywhere".
+- Tester harness: `.claude/tests/scripts` (Playwright via nix-shell); the
+  scratchpad screenshot helper `shoot3.mjs` had to be recreated after a
+  reboot (scratchpad is wiped) — copy test-nix-manager, never point the app
+  at `/`.
+
+## 2026-10-17: second tester review (.claude/tests/2026-10-17-feature-and-qol-review.md)
+Response with the per-item status: `.claude/tests/2026-10-17-feature-and-qol-review-response.md`.
+New pieces worth knowing:
+- `fsbrowse::start_from_system(dest)` copies /etc/nixos (no flake.lock) into
+  an empty folder; `git::init_repo` (init + .gitignore hardware-configuration
+  .nix/flake.lock/result + first commit when an identity exists);
+  `POST /api/location/start-from-system {dest, git_init}`. Buttons: setup page
+  (next to /etc/nixos) and the read-only banner in the file view.
+- `JobManager::build_status(workdir)`: last successful `nixos-rebuild …
+  (<path>)` job from the on-disk logs + .nix files modified after it →
+  toolbar chip "N changes to apply"; the wizard snackbar offers "Build"
+  (`?build=1` on the workspace route opens the dialog).
+- Build dialog: summary paragraph + "Advanced" expansion panel (state in
+  localStorage `nixos-manager.buildAdvanced`, auto-opens when a target is
+  chosen); "Deploy to" hidden without targets.
+- `system.rs` + System page (route `system`): generations from profile
+  links, rollback (`nix-env --switch-generation N` + `switch-to-configuration
+  switch` as a sudo job), store usage (`df`), GC (`nix-collect-garbage`
+  `-d` / `--delete-older-than Nd`).
+- Option docs: `shared/option-doc-dialog.component.ts` (tries the exact
+  path, then `<name>` wildcards and parents); NodeComponent has a `prefix`
+  input so each row knows its full attribute path; info button per setting.
+- Undo: per-session history in FileViewComponent (`remember()` before every
+  apply and wizard apply; `undo()` replays via `replace_file`).
+- Parse errors → Monaco markers (`CodeEditorComponent.markers`) with
+  `plainParseError()` wording; same wording in the Form view list.
+- Package search: `packages::rank` (exact > prefix > word > description >
+  substring; POPULAR boost; lib*/-bin/-unwrapped/-unstable/dotted demoted),
+  `POPULAR` list + `GET /api/packages/popular` → wizard chip row.
+- Host per folder: `POST /api/location/host` (touch_location with host);
+  WorkspaceService reads it back from `/api/state` on open.
+- Theme: `html[data-theme=light|dark]` override in styles.scss (mixin
+  `nm-dark`), toolbar menu, localStorage `nixos-manager.theme`.
+- Setup suggestions: flakes only when flake.nix mentions nixosConfigurations.
+Not done from the review: global Add-something with best-file suggestion,
+auto-Validate, per-host filtering, diff before build, per-input flake
+update, command palette, job-log file:line links, unified file tree.

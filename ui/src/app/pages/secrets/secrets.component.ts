@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -19,7 +20,7 @@ import type { SecretEntry, SecretsStatus } from '../../api/generated';
 /** Managed secrets: one passphrase-encrypted secrets.age in the config folder. */
 @Component({
   selector: 'app-secrets',
-  imports: [FormsModule, MatButtonModule, MatCardModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTooltipModule, MatMenuModule],
+  imports: [FormsModule, MatButtonModule, MatCardModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective, MatMenuModule],
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     h2 { margin: 0; font-weight: 400; }
@@ -88,9 +89,9 @@ import type { SecretEntry, SecretsStatus } from '../../api/generated';
                       <button mat-menu-item (click)="copy('&quot;credentials=' + s.deploy.deploy_dir + '/' + e.name + '&quot;')"><mat-icon>folder_shared</mat-icon><span class="mono">"credentials={{ s.deploy.deploy_dir }}/{{ e.name }}"</span><span class="muted" style="margin-left:8px">mount option</span></button>
                     }
                   </mat-menu>
-                  <button mat-icon-button matTooltip="Reveal" (click)="reveal(e)"><mat-icon>visibility</mat-icon></button>
-                  <button mat-icon-button matTooltip="Edit" (click)="edit(e)"><mat-icon>edit</mat-icon></button>
-                  <button mat-icon-button matTooltip="Remove" (click)="remove(e)"><mat-icon>delete</mat-icon></button>
+                  <button mat-icon-button matTooltip="Reveal" [disabled]="busy()" (click)="reveal(e)"><mat-icon>visibility</mat-icon></button>
+                  <button mat-icon-button matTooltip="Edit" [disabled]="busy()" (click)="edit(e)"><mat-icon>edit</mat-icon></button>
+                  <button mat-icon-button matTooltip="Remove" [disabled]="busy()" (click)="remove(e)"><mat-icon>delete</mat-icon></button>
                 </div>
               } @empty { <div class="muted">No secrets yet. Add an SMB login, then pick it in the "Mount a network share" wizard.</div> }
               <div class="note">Deployed: <span [class]="s.deploy.deployed_up_to_date ? 'ok' : 'warn'">{{ s.deploy.deployed_up_to_date ? 'up to date' : 'changed since the last build; the next build will ask for the secrets password' }}</span></div>

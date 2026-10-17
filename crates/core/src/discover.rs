@@ -10,6 +10,22 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const SKIP_DIRS: &[&str] = &[".git", ".claude", "node_modules", "result", "target", ".direnv", "dist"];
+/// Never descended into, whatever the root (a walk of `/` must not touch them).
+const SKIP_ABS: &[&str] = &["/proc", "/sys", "/dev", "/run", "/nix/store", "/nix/var"];
+/// Hard cap on entries per walk (a configuration has dozens of files, not thousands).
+const MAX_ENTRIES: usize = 20_000;
+
+fn skip_entry(e: &walkdir::DirEntry) -> bool {
+    if e.depth() == 0 || !e.file_type().is_dir() {
+        return false;
+    }
+    let name = e.file_name().to_string_lossy();
+    if SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.') {
+        return true;
+    }
+    let p = e.path().to_string_lossy();
+    SKIP_ABS.iter().any(|a| p == *a || p.starts_with(&format!("{a}/")))
+}
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn location_info(dir: &Path) -> Result<LocationInfo> {
@@ -83,11 +99,11 @@ pub fn classify_file(rel: &str) -> FileKind {
 /// Relative paths of all tracked files under `dir`.
 pub fn list_files(dir: &Path) -> Vec<(String, u64)> {
     let mut out = Vec::new();
-    let walker = WalkDir::new(dir).max_depth(8).follow_links(false).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !(e.depth() > 0 && e.file_type().is_dir() && (SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.')))
-    });
+    let walker = WalkDir::new(dir).max_depth(8).follow_links(false).same_file_system(true).into_iter().filter_entry(|e| !skip_entry(e));
     for entry in walker.flatten() {
+        if out.len() >= MAX_ENTRIES {
+            break;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -106,11 +122,11 @@ pub fn list_files(dir: &Path) -> Vec<(String, u64)> {
 /// Relative paths of all directories under `dir` (same skip rules as files).
 pub fn list_dirs(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = WalkDir::new(dir).max_depth(8).follow_links(false).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !(e.depth() > 0 && e.file_type().is_dir() && (SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.')))
-    });
+    let walker = WalkDir::new(dir).max_depth(8).follow_links(false).same_file_system(true).into_iter().filter_entry(|e| !skip_entry(e));
     for entry in walker.flatten() {
+        if out.len() >= MAX_ENTRIES {
+            break;
+        }
         if entry.depth() == 0 || !entry.file_type().is_dir() {
             continue;
         }
@@ -122,8 +138,12 @@ pub fn list_dirs(dir: &Path) -> Vec<String> {
 
 pub async fn overview(dir: &Path) -> Result<ConfigOverview> {
     let location = location_info(dir)?;
+    if location.kind == ConfigKind::Unknown {
+        return Err(CoreError::Invalid(format!("{} has neither flake.nix nor configuration.nix", dir.display())));
+    }
     let machine: MachineInfo = crate::nix::machine_info().await;
-    Ok(overview_with(location, machine))
+    // the walk and the parsing are synchronous file work: keep them off the async runtime
+    tokio::task::spawn_blocking(move || overview_with(location, machine)).await.map_err(|e| CoreError::Other(e.to_string()))
 }
 
 pub fn overview_with(location: LocationInfo, machine: MachineInfo) -> ConfigOverview {
@@ -229,6 +249,10 @@ pub fn read_file_view(root: &Path, rel: &str) -> Result<crate::types::NixFileVie
     let full = resolve_inside(root, rel)?;
     let src = std::fs::read_to_string(&full).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => CoreError::NotFound(format!("{rel} not found")),
+        std::io::ErrorKind::InvalidData => {
+            let size = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
+            CoreError::Invalid(format!("{rel} is a binary file ({size} bytes); it cannot be shown or edited here"))
+        }
         _ => CoreError::Io(e),
     })?;
     Ok(nixparse::analyze_file(rel, src))

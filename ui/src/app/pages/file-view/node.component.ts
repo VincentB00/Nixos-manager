@@ -1,6 +1,10 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, ElementRef, computed, effect, input, output, signal, viewChild } from '@angular/core';
 import { sliceBytes } from '../../shared/byte-offsets';
 import { FormsModule } from '@angular/forms';
+import { MatDialog } from '@angular/material/dialog';
+import { OptionDocDialogComponent } from '../../shared/option-doc-dialog.component';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { NgTemplateOutlet } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -14,8 +18,9 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
 
 @Component({
   selector: 'app-node',
-  imports: [FormsModule, NgTemplateOutlet, MatButtonModule, MatIconModule, MatSlideToggleModule, MatTooltipModule, MatMenuModule, CodeEditorComponent],
+  imports: [FormsModule, NgTemplateOutlet, MatButtonModule, MatIconModule, MatSlideToggleModule, MatTooltipModule, TooltipAriaDirective, MatMenuModule, CodeEditorComponent],
   styles: [`
+    @media (max-width: 700px) { .head { flex-wrap: wrap; } .head input, .head .inline { min-width: 120px !important; max-width: 100%; } .add-row { flex-wrap: wrap; } }
     :host { display: block; }
     .node { border-left: 2px solid transparent; padding: 2px 0 2px 8px; margin: 2px 0; }
     .node:hover { border-left-color: var(--mat-sys-outline-variant); }
@@ -49,7 +54,7 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
         @if (node().label) { <span class="label mono">{{ node().label }}</span> }
         @if (node().with_namespace) { <span class="with mono" matTooltip="Items are looked up inside this set">with {{ node().with_namespace }}</span> }
         <span class="kind">{{ kindLabel() }}</span>
-        @if (collapsible()) { <span class="count">{{ node().children.length }} {{ node().kind === 'list' ? 'items' : 'settings' }}</span> }
+        @if (collapsible()) { <span class="count">{{ node().children.length }} {{ node().kind === 'list' ? (node().children.length === 1 ? 'item' : 'items') : (node().children.length === 1 ? 'setting' : 'settings') }}</span> }
 
         @if (node().disabled) {
           @if ((node().source ?? '').includes('\n')) {
@@ -61,7 +66,7 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
         } @else if (!codeMode()) {
           @switch (node().kind) {
             @case ('bool') {
-              <mat-slide-toggle [checked]="node().value === 'true'" (change)="setScalar({ type: 'bool', value: $event.checked })" />
+              <mat-slide-toggle #tgl [checked]="node().value === 'true'" (change)="setScalar({ type: 'bool', value: $event.checked }); tgl.checked = node().value === 'true'" />
             }
             @case ('null') { <span class="mono muted">null</span> }
             @case ('string') { @if (node().interpolated) { <code>{{ node().value }}</code> } @else { <ng-container *ngTemplateOutlet="inlineInput" /> } }
@@ -82,11 +87,14 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
         }
         @if (node().comment) { <span class="comment" [matTooltip]="node().comment!">{{ node().comment }}</span> }
         <span class="actions">
+          @if (node().label && node().kind !== 'inherit' && parentKind() === 'attrset') {
+            <button mat-icon-button [matTooltip]="'What is ' + fullPath() + '?'" (click)="showDoc()"><mat-icon>info_outline</mat-icon></button>
+          }
           @if (!node().disabled && node().kind !== 'inherit') {
             <button mat-icon-button matTooltip="Edit as Nix code" (click)="startCode()"><mat-icon>code</mat-icon></button>
           }
           @if ((isListItem() || isBinding()) && !node().disabled) {
-            <button mat-icon-button [matTooltip]="node().kind === 'attrset' ? 'Comment out this whole group (keep it, but disable every setting in it)' : 'Comment out (keep but disable)'" (click)="emit({ op: 'toggle_disabled', node_id: node().id })"><mat-icon>visibility_off</mat-icon></button>
+            <button mat-icon-button [matTooltip]="node().kind === 'attrset' ? 'Disable this whole group (kept in the file as a comment; Enable brings it back)' : 'Disable (kept in the file as a comment; Enable brings it back)'" (click)="emit({ op: 'toggle_disabled', node_id: node().id })"><mat-icon>visibility_off</mat-icon></button>
           }
           @if (removable()) {
             <button mat-icon-button matTooltip="Remove" (click)="remove()"><mat-icon>delete</mat-icon></button>
@@ -125,7 +133,7 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
           @case ('attrset') {
             @if (open()) {
               <div class="children">
-                @for (c of node().children; track c.id) { <app-node [node]="c" [source]="source()" parentKind="attrset" [expandState]="expandState()" (edit)="edit.emit($event)" /> }
+                @for (c of node().children; track c.id) { <app-node [node]="c" [source]="source()" parentKind="attrset" [prefix]="fullPath()" [expandState]="expandState()" (edit)="edit.emit($event)" /> }
               </div>
               <div class="add-row">
                 <input class="inline mono" placeholder="option, e.g. services.openssh.enable" [(ngModel)]="newKey" (keyup.enter)="addBinding()" />
@@ -138,7 +146,7 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
           @case ('list') {
             @if (open()) {
               <div class="children">
-                @for (c of node().children; track c.id) { <app-node [node]="c" [source]="source()" parentKind="list" [withNamespace]="node().with_namespace" [expandState]="expandState()" (edit)="edit.emit($event)" /> }
+                @for (c of node().children; track c.id) { <app-node [node]="c" [source]="source()" parentKind="list" [prefix]="fullPath()" [withNamespace]="node().with_namespace" [expandState]="expandState()" (edit)="edit.emit($event)" /> }
               </div>
               <div class="add-row">
                 <input class="inline mono" [placeholder]="node().with_namespace ? 'item, e.g. htop' : 'item, e.g. pkgs.htop or ./file.nix'" [(ngModel)]="newItem" (keyup.enter)="addItem()" />
@@ -148,7 +156,7 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
           }
           @default {
             @if (collapsible() && open()) {
-              <div class="children">@for (c of node().children; track c.id) { <app-node [node]="c" [source]="source()" [parentKind]="node().kind" [expandState]="expandState()" (edit)="edit.emit($event)" /> }</div>
+              <div class="children">@for (c of node().children; track c.id) { <app-node [node]="c" [source]="source()" [parentKind]="node().kind" [prefix]="fullPath()" [expandState]="expandState()" (edit)="edit.emit($event)" /> }</div>
             }
           }
         }
@@ -178,9 +186,19 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
   `,
 })
 export class NodeComponent {
+  private dialog = inject(MatDialog);
+  private snack = inject(MatSnackBar);
   node = input.required<Node>();
   source = input.required<string>();
   parentKind = input<NodeKind | 'root'>('root');
+  /** Attribute path of the parent group, so a row knows its full option name. */
+  prefix = input<string>('');
+  fullPath = computed(() => { const l = this.node().label; const p = this.prefix(); return l ? (p ? `${p}.${l}` : l) : p; });
+  showDoc() {
+    const name = this.fullPath();
+    if (!name) return;
+    this.dialog.open(OptionDocDialogComponent, { width: '640px', maxWidth: '95vw', data: { name } });
+  }
   edit = output<EditOp>();
 
   open = signal(true);
@@ -267,8 +285,26 @@ export class NodeComponent {
     const n = this.node();
     let value: ScalarValue;
     switch (n.kind) {
-      case 'int': { const v = Number(d); value = Number.isInteger(v) ? { type: 'int', value: v } : { type: 'ref', value: d }; break; }
-      case 'float': { const v = Number(d); value = Number.isFinite(v) ? { type: 'float', value: v } : { type: 'ref', value: d }; break; }
+      case 'int': {
+        const v = Number(d);
+        if (!Number.isInteger(v)) {
+          if (/^[a-zA-Z_][\w.-]*$/.test(d.trim()) && d.includes('.')) { value = { type: 'ref', value: d.trim() }; break; } // e.g. vars.port
+          this.snack.open(`"${d}" is not a whole number; the value was not changed`, 'OK', { duration: 5000 });
+          return;
+        }
+        value = { type: 'int', value: v };
+        break;
+      }
+      case 'float': {
+        const v = Number(d);
+        if (!Number.isFinite(v)) {
+          if (/^[a-zA-Z_][\w.-]*$/.test(d.trim()) && d.includes('.')) { value = { type: 'ref', value: d.trim() }; break; }
+          this.snack.open(`"${d}" is not a number; the value was not changed`, 'OK', { duration: 5000 });
+          return;
+        }
+        value = { type: 'float', value: v };
+        break;
+      }
       case 'string':
         if (d.includes('${')) {
           // Interpolated: quote by hand (the scalar path would escape the ${).
@@ -307,6 +343,11 @@ export class NodeComponent {
   }
 
   addItem() {
+    {
+      const raw = (this.newItem ?? '').trim();
+      const existing = this.node().children.map(c => (c.value ?? c.source ?? '').trim());
+      if (raw && existing.includes(raw)) { this.snack.open(`"${raw}" is already in this list`, 'OK', { duration: 4000 }); return; }
+    }
     if (!this.newItem) return;
     this.emit({ op: 'list_append', node_id: this.node().id, source: this.newItem.trim() });
     this.newItem = '';

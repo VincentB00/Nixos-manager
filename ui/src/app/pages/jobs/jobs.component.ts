@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { SlicePipe } from '@angular/common';
@@ -15,10 +16,15 @@ import type { JobLogFile } from '../../api/generated';
 
 @Component({
   selector: 'app-jobs',
-  imports: [RouterLink, SlicePipe, MatListModule, MatIconModule, MatExpansionModule, MatButtonModule, MatTooltipModule],
+  imports: [RouterLink, SlicePipe, MatListModule, MatIconModule, MatExpansionModule, MatButtonModule, MatTooltipModule, TooltipAriaDirective],
+  styles: [`
+    mat-expansion-panel-header { height: auto !important; min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
+    mat-expansion-panel-header mat-panel-title { white-space: normal; word-break: break-word; min-width: 0; }
+    mat-expansion-panel-header mat-panel-description { flex: 0 0 auto; margin-left: 12px; white-space: nowrap; }
+  `],
   template: `
     <h2>Jobs</h2>
-    @if (list().length === 0) { <div class="muted">No builds yet. Use the Build button in the toolbar.</div> }
+    @if (list().length === 0) { <div class="muted">No jobs yet. Validate or Build in the toolbar starts one.</div> }
     <mat-nav-list>
       @for (j of list(); track j.id) {
         <a mat-list-item [routerLink]="['./', j.id]" queryParamsHandling="merge">
@@ -66,6 +72,9 @@ export class JobsComponent implements OnInit {
     return b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
   }
   remove(h: JobLogFile) {
+    this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '420px', data: { title: 'Delete this log?', message: h.title, okLabel: 'Delete', danger: true } }).afterClosed().subscribe(r => { if (r) this.removeNow(h); });
+  }
+  private removeNow(h: JobLogFile) {
     this.api.jobHistoryDelete(h.name).subscribe({
       next: () => { this.snack.open('Log deleted', undefined, { duration: 2500 }); this.loadHistory(); },
       error: e => this.snack.open(e.message, 'OK', { duration: 5000 }),

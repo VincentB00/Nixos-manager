@@ -1,3 +1,4 @@
+import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -17,7 +18,7 @@ import type { DeployTarget } from '../../api/generated';
 /** Remote machines: deploy targets (build here, activate there) and the root SSH key for remote builders. */
 @Component({
   selector: 'app-remote',
-  imports: [MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule],
+  imports: [MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
     h2 { margin: 0; font-weight: 400; }
@@ -44,7 +45,7 @@ import type { DeployTarget } from '../../api/generated';
           @for (t of targets(); track t.name) {
             <div class="row">
               <mat-icon>dns</mat-icon>
-              <div class="t"><b>{{ t.name }}</b><div class="d mono">{{ t.ssh_target }}{{ t.flake_host ? ' · #' + t.flake_host : '' }}{{ t.build_host ? ' · build on ' + t.build_host : '' }}{{ t.use_remote_sudo ? ' · remote sudo' : '' }}</div></div>
+              <div class="t"><b>{{ t.name }}</b><div class="d mono">{{ t.ssh_target }}{{ t.port ? ':' + t.port : '' }}{{ t.flake_host ? ' · #' + t.flake_host : '' }}{{ t.build_host ? ' · build on ' + t.build_host : '' }}{{ t.use_remote_sudo ? ' · remote sudo' : '' }}</div></div>
               <button mat-icon-button matTooltip="Set up key access (install this app's SSH key on the target using its password once)" (click)="setupKey(t)"><mat-icon>vpn_key</mat-icon></button>
               <button mat-icon-button matTooltip="Test the SSH connection" (click)="test(t)"><mat-icon>network_check</mat-icon></button>
               <button mat-icon-button matTooltip="Copy this target's /etc/nixos/hardware-configuration.nix into the working copy (replaces the file there)" (click)="pullHardware(t)"><mat-icon>download</mat-icon></button>
@@ -142,7 +143,7 @@ export class RemoteComponent implements OnInit {
   }
 
   test(t: DeployTarget) {
-    this.api.remoteTest(t.ssh_target).subscribe({
+    this.api.remoteTest(t.ssh_target, t.port ?? null).subscribe({
       next: job => this.router.navigate(['/w', 'jobs', job.id], { queryParamsHandling: 'merge' }),
       error: (e: ApiFailure) => this.error.set(e.message),
     });

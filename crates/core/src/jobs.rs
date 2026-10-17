@@ -178,6 +178,40 @@ impl JobManager {
         std::fs::read_to_string(logs_dir().join(name)).map_err(|_| crate::error::CoreError::NotFound(format!("log {name}")))
     }
 
+    /// Last successful build/deploy of `workdir` (from the on-disk log
+    /// headers) and the .nix files modified after it.
+    pub fn build_status(workdir: &std::path::Path) -> crate::types::BuildStatus {
+        let needle = format!("({})", workdir.display());
+        let mut best: Option<(String, String)> = None;
+        for h in Self::history() {
+            if h.status.as_deref().map(|s| s.starts_with("succeeded")).unwrap_or(false) && h.title.contains(&needle) && h.title.starts_with("nixos-rebuild") {
+                if let Some(at) = h.started_at.clone() {
+                    if best.as_ref().map(|(b, _)| at > *b).unwrap_or(true) {
+                        best = Some((at, h.title.clone()));
+                    }
+                }
+            }
+        }
+        let Some((at, title)) = best else {
+            return crate::types::BuildStatus { last_build_at: None, last_build_title: None, changed_files: vec![] };
+        };
+        let since = chrono::DateTime::parse_from_rfc3339(&at).map(|d| d.with_timezone(&chrono::Utc)).ok();
+        let mut changed = Vec::new();
+        if let Some(since) = since {
+            for (rel, _) in crate::discover::list_files(workdir) {
+                if !rel.ends_with(".nix") || rel.ends_with("hardware-configuration.nix") {
+                    continue;
+                }
+                if let Ok(m) = std::fs::metadata(workdir.join(&rel)).and_then(|m| m.modified()) {
+                    if chrono::DateTime::<chrono::Utc>::from(m) > since {
+                        changed.push(rel);
+                    }
+                }
+            }
+        }
+        crate::types::BuildStatus { last_build_at: Some(at), last_build_title: Some(title), changed_files: changed }
+    }
+
     /// Delete one log file (never the one of a job that is still running).
     pub async fn history_delete(&self, name: &str) -> crate::error::Result<()> {
         if name.is_empty() || name.contains('/') || name.contains("..") || !name.ends_with(".log") {

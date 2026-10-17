@@ -15,7 +15,9 @@ import type { LogLine } from '../../api/generated';
   selector: 'app-job-log',
   imports: [MatIconModule, MatProgressBarModule, MatButtonModule, RouterLink],
   styles: [`
-    .head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+    .head h2 { flex: 1 1 100%; font-size: 1.15em; font-weight: 500; line-height: 1.3; word-break: break-word; }
+    .head .status { flex: none; }
     .term { height: calc(100vh - 220px); min-height: 300px; background: #1e1e1e; border-radius: 8px; padding: 8px; }
     .status { padding: 2px 10px; border-radius: 12px; font-size: .85em; background: var(--mat-sys-surface-container-high); }
     .status.failed { background: var(--mat-sys-error-container); color: var(--mat-sys-on-error-container); }
@@ -28,12 +30,16 @@ import type { LogLine } from '../../api/generated';
       <span [class]="'status ' + (job()?.info.status ?? '')">{{ job()?.info.status }}</span>
       @if (job()?.info.error) { <span class="error-text">{{ job()?.info.error }}</span> }
       @if (job()?.info.log_file; as f) { <span class="muted" style="font-size:.8em" [title]="f">log saved on disk</span> }
+      @if (firstErrorLine() !== null) { <button mat-stroked-button (click)="jumpToError()" matTooltip="Scroll to the first error line in the log"><mat-icon>error_outline</mat-icon> First error</button> }
       <span class="spacer"></span>
       @if (job()?.info.status === 'running' || job()?.info.status === 'pending') {
         <button mat-stroked-button color="warn" (click)="stop()" [disabled]="stopping()"><mat-icon>stop_circle</mat-icon> {{ stopping() ? 'Stopping…' : 'Stop' }}</button>
       }
     </div>
     @if (job()?.info.status === 'running' || job()?.info.status === 'pending') { <mat-progress-bar mode="indeterminate" /> }
+    @if (notFound()) {
+      <div class="warning-box"><mat-icon>search_off</mat-icon><span>No running or recent job has this id. If the daemon was restarted, the log is still on disk: see "Earlier logs on disk" on the <a routerLink="../" queryParamsHandling="merge">Jobs page</a>.</span></div>
+    }
     <div #term class="term"></div>
   `,
 })
@@ -43,6 +49,9 @@ export class JobLogComponent implements AfterViewInit, OnDestroy {
   private api = inject(ApiService);
   private dialog = inject(MatDialog);
   stopping = signal(false);
+  notFound = signal(false);
+  firstErrorLine = signal<number | null>(null);
+  jumpToError() { const l = this.firstErrorLine(); if (l !== null) this.terminal?.scrollToLine(Math.max(0, l - 2)); }
 
   stop() {
     const kind = this.job()?.info.kind ?? '';
@@ -72,7 +81,15 @@ export class JobLogComponent implements AfterViewInit, OnDestroy {
       for (let i = this.written; i < j.log.length; i++) this.write(j.log[i]);
       this.written = j.log.length;
     });
-    effect(() => { this.jobs.load(this.id()); this.written = 0; this.terminal?.clear(); });
+    effect(() => {
+      const id = this.id();
+      this.jobs.load(id);
+      this.written = 0;
+      this.terminal?.clear();
+      this.notFound.set(false);
+      this.firstErrorLine.set(null);
+      this.api.job(id).subscribe({ next: () => this.notFound.set(false), error: () => this.notFound.set(true) });
+    });
   }
 
   ngAfterViewInit() {
@@ -88,6 +105,7 @@ export class JobLogComponent implements AfterViewInit, OnDestroy {
   }
 
   private write(l: LogLine) {
+    if (this.firstErrorLine() === null && /^(error:|\[nixos-manager\] ERROR|ERROR:|Error:)/.test(l.text.trim())) this.firstErrorLine.set(this.written);
     if (!this.terminal) return;
     if (l.stream === 'system') this.terminal.writeln(`\x1b[36m${l.text}\x1b[0m`);
     else if (l.stream === 'stderr') this.terminal.writeln(`\x1b[33m${l.text}\x1b[0m`);

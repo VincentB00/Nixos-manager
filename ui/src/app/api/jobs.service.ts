@@ -40,13 +40,13 @@ export class JobsService {
 
   /** Load the full log for one job (after a reload, the live map has none). */
   load(id: string) {
-    this.api.job(id).subscribe(detail => {
+    this.api.job(id).subscribe({ error: () => { /* unknown id: the job page shows a note */ }, next: detail => {
       this.jobs.update(map => {
         const next = new Map(map);
         next.set(id, { info: detail.info, log: detail.log });
         return next;
       });
-    });
+    } });
   }
 
   private connect() {
