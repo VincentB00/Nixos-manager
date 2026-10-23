@@ -54,6 +54,7 @@ The quickest way on any machine with Nix:
 ./run.sh            # nix-shell with the toolchains, builds what is stale, opens the browser
 ./run.sh --dev      # same, but with the Angular dev server and live reload on :4200
 ./run.sh --watch    # rebuild and restart automatically whenever Rust or UI sources change
+./run.sh --tui      # terminal UI instead of the browser: pick a folder, validate, build/deploy, roll back (for SSH sessions and headless machines)
 ./run.sh --help     # all options
 ```
 

@@ -59,6 +59,11 @@
           type = "app";
           program = "${daemon}/bin/nixos-manager-daemon";
         };
+        # terminal UI for SSH sessions / headless machines: nix run .#tui -- [folder]
+        apps.tui = {
+          type = "app";
+          program = "${daemon}/bin/nixos-manager-tui";
+        };
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [

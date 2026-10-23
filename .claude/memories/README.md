@@ -20,6 +20,7 @@ decision is made, something is learned, or work is completed. Dates are absolute
 | 12-secrets.md | Managed secrets: passphrase-encrypted secrets.age, deploy to /var/lib/nixos-manager/secrets |
 | 13-validate.md | Validate: syntax check + evaluation/dry build on a staged copy, no sudo |
 | 14-remote.md | Deploy targets (--target-host) and remote builders (buildMachines) |
+| 17-tui.md | Terminal UI (`./run.sh --tui`): pick folder, build/deploy, validate, generations, job log |
 | 16-git.md | Git page: branches, status/diffs, generated commit messages, push/fetch/pull, askpass credentials |
 | 15-hardware.md | hardware-configuration.nix rules: system copy is the source of truth; sync on open, confirm on local build, target's own file for remote deploys |
 

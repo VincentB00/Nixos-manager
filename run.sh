@@ -10,6 +10,7 @@
 #   ./run.sh --rebuild       force rebuilding the UI and the daemon
 #   ./run.sh --no-open       do not open the browser
 #   ./run.sh --js-sass       use the pure-JS Sass compiler (if the native one crashes with EPIPE)
+#   ./run.sh --tui [FOLDER]  terminal UI instead of the browser (for a PTTY/SSH session; no daemon needed)
 #   ./run.sh --help
 
 set -euo pipefail
@@ -33,7 +34,7 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 # ── Options ─────────────────────────────────────────────────────────────────
-DEV=0; WATCH=0; LISTEN="127.0.0.1:7788"; REBUILD=0; OPEN=1; JS_SASS="${NIXOS_MANAGER_JS_SASS:-0}"
+DEV=0; WATCH=0; LISTEN="127.0.0.1:7788"; REBUILD=0; OPEN=1; TUI=0; TUI_PATH=""; JS_SASS="${NIXOS_MANAGER_JS_SASS:-0}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dev) DEV=1 ;;
@@ -43,13 +44,24 @@ while [[ $# -gt 0 ]]; do
     --rebuild) REBUILD=1 ;;
     --no-open) OPEN=0 ;;
     --js-sass) JS_SASS=1 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --tui) TUI=1; if [[ $# -gt 1 && "$2" != --* ]]; then TUI_PATH="$2"; shift; fi ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
   esac
   shift
 done
 
 log() { printf '\033[1;36m[run.sh]\033[0m %s\n' "$*"; }
+
+# ── Terminal UI (no daemon, no browser) ─────────────────────────────────────
+if [[ $TUI -eq 1 ]]; then
+  BIN=target/release/nixos-manager-tui
+  if [[ $REBUILD -eq 1 || ! -x "$BIN" || -n "$(find crates -newer "$BIN" -name '*.rs' -print -quit 2>/dev/null)" ]]; then
+    log "Building the terminal UI..."
+    cargo build --release -p nixos-manager-tui
+  fi
+  exec "$BIN" ${TUI_PATH:+"$TUI_PATH"}
+fi
 
 # Angular compiles SCSS with sass-embedded, a native Dart helper process. If it
 # dies (symptom: "Error: write EPIPE" from sass-embedded), fall back to the

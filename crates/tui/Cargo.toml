@@ -1,0 +1,20 @@
+[package]
+name = "nixos-manager-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal UI for Nixos-manager: pick a configuration folder, validate, build and deploy from a plain terminal"
+
+[[bin]]
+name = "nixos-manager-tui"
+path = "src/main.rs"
+
+[dependencies]
+nixos-manager-core = { path = "../core" }
+anyhow.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"
+serde_json.workspace = true
