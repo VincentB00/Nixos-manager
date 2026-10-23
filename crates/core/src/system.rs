@@ -369,3 +369,65 @@ pub async fn remote_delete_paths(job: JobHandle, target: crate::types::DeployTar
         Err(e) => job.failed(e.to_string()).await,
     }
 }
+
+// ───────────────────────── free memory before a build (TUI) ─────────────────────────
+
+/// Vincent's clear-sessions.sh as a root job: terminate every login session
+/// except `my_session`, terminate lingering user managers except `my_user`
+/// and root, then drop the page cache. Frees the RAM a desktop holds so a
+/// big build can run from a bare TTY or an SSH session.
+pub fn free_memory_script(my_session: &str, my_user: &str) -> String {
+    let sess = my_session.replace(|c: char| !c.is_ascii_alphanumeric(), "");
+    let user = my_user.replace(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'), "");
+    format!(
+        r#"set -uo pipefail
+MY_SESSION='{sess}'
+MY_USER='{user}'
+echo "[nixos-manager] protecting session ${{MY_SESSION:-unknown}} (user $MY_USER)"
+echo "[nixos-manager] memory before:"; free -h | head -2
+killed=0
+for sid in $(loginctl list-sessions --no-legend | awk '{{print $1}}'); do
+  if [ "$sid" = "$MY_SESSION" ]; then echo "  skip      session $sid (this one)"; continue; fi
+  suser=$(loginctl show-session "$sid" -p Name --value 2>/dev/null || echo '?')
+  echo "  terminate session $sid (user $suser)"
+  loginctl terminate-session "$sid" || echo "    could not terminate session $sid"
+  killed=$((killed + 1))
+done
+for u in $(loginctl list-users --no-legend | awk '{{print $2}}'); do
+  if [ "$u" = "$MY_USER" ] || [ "$u" = root ]; then continue; fi
+  echo "  terminate user manager of $u"
+  loginctl terminate-user "$u" || echo "    could not terminate user $u"
+done
+sleep 2
+sync
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+echo "[nixos-manager] terminated $killed other session(s); page cache dropped"
+echo "[nixos-manager] memory now:"; free -h | head -2
+"#
+    )
+}
+
+pub async fn free_memory(job: JobHandle, password: String, my_session: String, my_user: String) {
+    job.running().await;
+    let script = free_memory_script(&my_session, &my_user);
+    match crate::deploy::run_root_script(&job, &password, &script, None).await {
+        Ok(0) => job.succeeded().await,
+        Ok(c) => job.failed(format!("free-memory exited with status {c}; see the log")).await,
+        Err(e) => job.failed(e.to_string()).await,
+    }
+}
+
+#[cfg(test)]
+mod free_memory_tests {
+    #[test]
+    fn script_parses_and_protects_the_caller() {
+        let s = super::free_memory_script("3", "vincent");
+        assert!(s.contains("MY_SESSION='3'") && s.contains("MY_USER='vincent'"));
+        assert!(s.contains("loginctl terminate-session") && s.contains("drop_caches"));
+        let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(&s).status().unwrap();
+        assert!(st.success());
+        // odd characters cannot break out of the quotes
+        let s2 = super::free_memory_script("3'; rm -rf /", "a b");
+        assert!(s2.contains("MY_SESSION='3rmrf'") && s2.contains("MY_USER='ab'"));
+    }
+}
