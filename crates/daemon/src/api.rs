@@ -268,7 +268,7 @@ async fn system_store() -> ApiResult<StoreUsage> {
 }
 
 async fn system_rollback(State(ctx): State<AppCtx>, Json(r): Json<RollbackRequest>) -> ApiResult<JobInfo> {
-    if r.password.is_empty() {
+    if r.password.is_empty() && !deploy::running_as_root() {
         return Err(CoreError::Invalid("sudo password is required".into()).into());
     }
     let job = ctx.jobs.create("system", &format!("Roll back to generation {}", r.number)).await;
@@ -278,7 +278,7 @@ async fn system_rollback(State(ctx): State<AppCtx>, Json(r): Json<RollbackReques
 }
 
 async fn system_gc(State(ctx): State<AppCtx>, Json(r): Json<GcRequest>) -> ApiResult<JobInfo> {
-    if r.password.is_empty() {
+    if r.password.is_empty() && !deploy::running_as_root() {
         return Err(CoreError::Invalid("sudo password is required".into()).into());
     }
     let title = if r.keep_generations { "Collect garbage (keep all generations)".to_string() } else if r.older_than_days == 0 { "Collect garbage (delete all old generations)".to_string() } else { format!("Collect garbage (older than {} days)", r.older_than_days) };
@@ -297,7 +297,7 @@ async fn system_other() -> ApiResult<Vec<OtherSystem>> {
 }
 
 async fn system_delete_paths(State(ctx): State<AppCtx>, Json(r): Json<DeletePathsRequest>) -> ApiResult<JobInfo> {
-    if r.password.is_empty() {
+    if r.password.is_empty() && !deploy::running_as_root() {
         return Err(CoreError::Invalid("sudo password is required".into()).into());
     }
     if r.paths.is_empty() {
@@ -695,7 +695,7 @@ async fn remote_setup_key(State(ctx): State<AppCtx>, Json(req): Json<KeyAccessRe
 }
 
 async fn remote_root_key(State(ctx): State<AppCtx>, Json(req): Json<RootKeyRequest>) -> ApiResult<JobInfo> {
-    if req.password.is_empty() {
+    if req.password.is_empty() && !deploy::running_as_root() {
         return Err(CoreError::Invalid("sudo password is required".into()).into());
     }
     let job = ctx.jobs.create("root-key", "Root SSH key for remote builders").await;
@@ -706,7 +706,7 @@ async fn remote_root_key(State(ctx): State<AppCtx>, Json(req): Json<RootKeyReque
 }
 
 async fn deploy_start(State(ctx): State<AppCtx>, Json(req): Json<DeployRequest>) -> ApiResult<JobInfo> {
-    if req.password.is_empty() && req.target.is_none() {
+    if req.password.is_empty() && req.target.is_none() && !deploy::running_as_root() {
         return Err(CoreError::Invalid("sudo password is required".into()).into());
     }
     let title = match &req.target {

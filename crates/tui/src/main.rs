@@ -136,7 +136,7 @@ impl BuildForm {
         if after_set(self.after) || (remote && after_set(self.after_local)) {
             f.push(Field::AfterAlways);
         }
-        if !remote {
+        if !remote && !deploy::running_as_root() {
             f.push(Field::LocalPassword);
         }
         if remote || self.build_on_idx > 0 {
@@ -448,7 +448,7 @@ impl App {
         let builder = self.form_builder();
         let hosts = self.overview.as_ref().map(|o| o.location.hosts.clone()).unwrap_or_default();
         let host = hosts.get(self.form.host_idx).cloned().or(self.host.clone());
-        if target.is_none() && self.form.local_password.is_empty() {
+        if target.is_none() && self.form.local_password.is_empty() && !deploy::running_as_root() {
             self.status = Some("Enter your sudo password first.".into());
             return;
         }
@@ -551,7 +551,7 @@ impl App {
     /// Open the password popup for a root action on the system screen's machine.
     fn ask_system(&mut self, title: &str, mut lines: Vec<String>, action: PromptAction) {
         let (ask, require, lines) = match &self.sys.machine {
-            None => (true, true, lines),
+            None => (!deploy::running_as_root(), !deploy::running_as_root(), lines),
             Some(t) => match self.remote_needs_password(t) {
                 Some(false) => (false, false, lines),
                 Some(true) => (true, true, lines),
@@ -836,8 +836,8 @@ fn key_workspace(app: &mut App, key: KeyEvent) -> bool {
                 ],
                 action: PromptAction::FreeMemory,
                 password: String::new(),
-                ask_password: true,
-                require_password: true,
+                ask_password: !deploy::running_as_root(),
+                require_password: !deploy::running_as_root(),
             });
         }
         KeyCode::Char('q') | KeyCode::Esc => {
@@ -1070,7 +1070,8 @@ fn key_targets(app: &mut App, key: KeyEvent) -> bool {
             if let Some(h) = &host {
                 lines.push(format!("Also records the host key of {h} for root. Then authorize the printed key on {h} to use it as a builder."));
             }
-            app.prompt = Some(Prompt { title: "Root SSH key for remote builders".into(), lines, action: PromptAction::RootKey(host), password: String::new(), ask_password: true, require_password: true });
+            let root = deploy::running_as_root();
+            app.prompt = Some(Prompt { title: "Root SSH key for remote builders".into(), lines, action: PromptAction::RootKey(host), password: String::new(), ask_password: !root, require_password: !root });
         }
         _ => {}
     }
@@ -1255,6 +1256,9 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(vec![Span::styled("Machine  ", dim), Span::raw(format!("{} · NixOS {}", ov.machine.hostname.clone().unwrap_or_default(), ov.machine.nixos_version.clone().unwrap_or_default()))]),
         Line::from(vec![Span::styled("Writable ", dim), Span::raw(if ov.location.writable { "yes" } else { "no" })]),
     ];
+    if deploy::running_as_root() {
+        lines.push(Line::from(vec![Span::styled("Running  ", dim), Span::styled("as root — no sudo password is asked for local actions", Style::default().fg(Color::Green))]));
+    }
     if let Some(hw) = &app.hw {
         let txt = match (&hw.pulled_from, hw.local_exists, hw.system_exists, hw.differs) {
             (Some(p), _, _, _) => format!("{} is the copy pulled from {} ({})", hw.rel_path, p.target, p.at.get(..16).unwrap_or(&p.at).replace('T', " ")),

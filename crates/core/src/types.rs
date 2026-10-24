@@ -235,6 +235,10 @@ pub struct MachineInfo {
     pub hostname: Option<String>,
     pub nixos_version: Option<String>,
     pub nix_version: Option<String>,
+    /// The daemon / TUI itself runs as root (run.sh started with sudo): root
+    /// actions need no sudo password.
+    #[serde(default)]
+    pub running_as_root: bool,
 }
 
 // ───────────────────────── nix file tree ─────────────────────────
@@ -583,6 +587,9 @@ pub struct ConfigConflict {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DeployPreflight {
+    /// See `MachineInfo::running_as_root`: no local sudo password is needed.
+    #[serde(default)]
+    pub running_as_root: bool,
     pub etc_nixos_exists: bool,
     pub etc_nixos_readable: bool,
     /// The working copy *is* /etc/nixos; sync must be refused (sync.sh guard).

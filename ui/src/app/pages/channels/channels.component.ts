@@ -61,7 +61,7 @@ import type { ChannelAction, ChannelEntry, ChannelScope, ChannelsInfo } from '..
               <button mat-icon-button matTooltip="Remove" (click)="act('remove', 'system', c)" [disabled]="c.name === 'nixos'"><mat-icon>delete</mat-icon></button>
             </div>
           } @empty { <div class="muted">No system channels found.</div> }
-          <div class="note">Running NixOS {{ info()?.nixos_version ?? '?' }}. Changing the <code>nixos</code> channel to another version upgrades or downgrades the whole system on the next build. Actions here ask for your sudo password.</div>
+          <div class="note">Running NixOS {{ info()?.nixos_version ?? '?' }}. Changing the <code>nixos</code> channel to another version upgrades or downgrades the whole system on the next build. {{ ws.isRoot() ? 'The app runs as root, so no password is asked.' : 'Actions here ask for your sudo password.' }}</div>
         </mat-card-content>
         <mat-card-actions>
           <button mat-stroked-button (click)="add('system')"><mat-icon>add</mat-icon> Add channel</button>
@@ -122,6 +122,7 @@ export class ChannelsComponent implements OnInit {
 
   private withPassword(scope: ChannelScope, title: string, then: (pw: string | null) => void) {
     if (scope === 'user') { then(null); return; }
+    if (this.ws.isRoot()) { then(''); return; }
     this.prompt({ title, message: 'System channels belong to root. Enter your sudo password to continue; it is used once and never stored.', label: 'Sudo password', password: true, okLabel: 'Run' })
       .subscribe(r => { if (r) then(r.value); });
   }

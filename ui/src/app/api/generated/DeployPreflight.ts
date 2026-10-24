@@ -5,7 +5,11 @@ import type { DeployTarget } from "./DeployTarget";
 import type { HardwareStatus } from "./HardwareStatus";
 import type { SecretsDeployInfo } from "./SecretsDeployInfo";
 
-export type DeployPreflight = { etc_nixos_exists: boolean, etc_nixos_readable: boolean, 
+export type DeployPreflight = { 
+/**
+ * See `MachineInfo::running_as_root`: no local sudo password is needed.
+ */
+running_as_root: boolean, etc_nixos_exists: boolean, etc_nixos_readable: boolean, 
 /**
  * The working copy *is* /etc/nixos; sync must be refused (sync.sh guard).
  */

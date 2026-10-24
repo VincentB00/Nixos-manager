@@ -21,6 +21,8 @@ export class WorkspaceService {
   readonly gitInfo = signal<GitInfo | null>(null);
   /** Files changed since the last successful build of this folder (toolbar chip). */
   readonly buildStatus = signal<BuildStatus | null>(null);
+  /** The daemon runs as root (run.sh started with sudo): local root actions ask for no sudo password. */
+  readonly isRoot = computed(() => this.overview()?.machine.running_as_root ?? false);
   private storedHost: string | null = null;
 
   /** Pick the host to build and remember it for this folder. */

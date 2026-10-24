@@ -382,27 +382,49 @@ pub fn free_memory_script(my_session: &str, my_user: &str) -> String {
     format!(
         r#"set -uo pipefail
 MY_SESSION='{sess}'
+if [ -z "$MY_SESSION" ]; then MY_SESSION="$(loginctl show-session self -p Id --value 2>/dev/null || true)"; fi
 MY_USER='{user}'
 echo "[nixos-manager] protecting session ${{MY_SESSION:-unknown}} (user $MY_USER)"
 echo "[nixos-manager] memory before:"; free -h | head -2
 killed=0
+KILLED_SIDS=""
 for sid in $(loginctl list-sessions --no-legend | awk '{{print $1}}'); do
   if [ "$sid" = "$MY_SESSION" ]; then echo "  skip      session $sid (this one)"; continue; fi
   suser=$(loginctl show-session "$sid" -p Name --value 2>/dev/null || echo '?')
-  echo "  terminate session $sid (user $suser)"
-  loginctl terminate-session "$sid" || echo "    could not terminate session $sid"
-  killed=$((killed + 1))
+  sclass=$(loginctl show-session "$sid" -p Class --value 2>/dev/null || echo '?')
+  echo "  terminate session $sid (user $suser, $sclass)"
+  if loginctl terminate-session "$sid"; then killed=$((killed + 1)); KILLED_SIDS="$KILLED_SIDS $sid"; else echo "    could not terminate session $sid"; fi
 done
 for u in $(loginctl list-users --no-legend | awk '{{print $2}}'); do
   if [ "$u" = "$MY_USER" ] || [ "$u" = root ]; then continue; fi
   echo "  terminate user manager of $u"
   loginctl terminate-user "$u" || echo "    could not terminate user $u"
 done
-sleep 2
+# terminate-session only asks systemd to stop the session; the processes exit
+# on their own time (SIGTERM, then SIGKILL after the stop timeout). Wait for
+# them so the numbers below are real, and finish off what ignores SIGTERM.
+remaining=""
+if [ -n "$KILLED_SIDS" ]; then
+  for i in $(seq 1 60); do
+    remaining=""
+    for sid in $KILLED_SIDS; do loginctl show-session "$sid" >/dev/null 2>&1 && remaining="$remaining $sid"; done
+    [ -z "$remaining" ] && break
+    if [ $((i % 5)) -eq 0 ]; then echo "  waiting for session(s)$remaining to end ($i s)…"; fi
+    sleep 1
+  done
+  if [ -n "$remaining" ]; then
+    echo "  still alive after 60 s:$remaining — sending SIGKILL"
+    for sid in $remaining; do loginctl kill-session "$sid" --signal=SIGKILL || true; done
+    sleep 3
+  fi
+fi
 sync
-echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-echo "[nixos-manager] terminated $killed other session(s); page cache dropped"
+if {{ echo 3 > /proc/sys/vm/drop_caches; }} 2>/dev/null; then dropped="page cache dropped"; else dropped="could not drop the page cache"; fi
+echo "[nixos-manager] terminated $killed other session(s); $dropped"
 echo "[nixos-manager] memory now:"; free -h | head -2
+echo "[nixos-manager] sessions now:"; loginctl list-sessions --no-legend 2>/dev/null | sed 's/^/  /'
+echo "[nixos-manager] largest processes still running:"
+ps -eo rss=,user=,comm= --sort=-rss | head -8 | awk '{{printf "  %6d MiB  %-12s %s\n", $1/1024, $2, $3}}'
 "#
     )
 }
@@ -424,6 +446,7 @@ mod free_memory_tests {
         let s = super::free_memory_script("3", "vincent");
         assert!(s.contains("MY_SESSION='3'") && s.contains("MY_USER='vincent'"));
         assert!(s.contains("loginctl terminate-session") && s.contains("drop_caches"));
+        assert!(s.contains("kill-session") && s.contains("seq 1 60"), "waits for the sessions and escalates");
         let st = std::process::Command::new("bash").arg("-n").arg("-c").arg(&s).status().unwrap();
         assert!(st.success());
         // odd characters cannot break out of the quotes

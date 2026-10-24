@@ -32,6 +32,7 @@ pub async fn preflight(workdir: &Path, pull: Option<&crate::types::HardwarePull>
     };
     let machine = nix::machine_info().await;
     Ok(DeployPreflight {
+        running_as_root: running_as_root(),
         etc_nixos_exists: etc_exists,
         etc_nixos_readable: etc_readable,
         source_is_etc_nixos: loc.is_etc_nixos,
@@ -354,7 +355,17 @@ fi
 }
 
 /// Validate the sudo password without running anything.
+/// True when this process already is root (run.sh started with sudo, or the
+/// daemon runs as a root service): every "as root" step then runs bash
+/// directly and no sudo password is asked or validated.
+pub fn running_as_root() -> bool {
+    unsafe_uid().0 == 0
+}
+
 pub(crate) async fn check_sudo(password: &str) -> Result<()> {
+    if running_as_root() {
+        return Ok(());
+    }
     let mut lines: Vec<String> = Vec::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let code = process::stream(
@@ -410,12 +421,16 @@ pub async fn run(job: JobHandle, req: DeployRequest) {
         }
         job.system(format!("Build on {}: the system is evaluated here, compiled on the builder, copied back and activated on this machine.", b.ssh_target)).await;
     }
-    job.system(format!("Validating sudo password for {}...", req.path)).await;
-    if let Err(e) = check_sudo(&req.password).await {
-        job.failed(e.to_string()).await;
-        return;
+    if running_as_root() {
+        job.system("Running as root: no sudo password needed.").await;
+    } else {
+        job.system(format!("Validating sudo password for {}...", req.path)).await;
+        if let Err(e) = check_sudo(&req.password).await {
+            job.failed(e.to_string()).await;
+            return;
+        }
+        job.system("Password accepted.").await;
     }
-    job.system("Password accepted.").await;
 
     // Managed secrets: decrypt as the user into a private temp dir; the root
     // script installs them before nixos-rebuild.
@@ -470,9 +485,13 @@ pub async fn run(job: JobHandle, req: DeployRequest) {
 /// Validate the password, then run `script` as root with `sudo -S bash`,
 /// streaming output into the job. Returns the exit status.
 pub async fn run_root_script(job: &JobHandle, password: &str, script: &str, cwd: Option<&Path>) -> Result<i32> {
-    job.system("Validating sudo password...").await;
-    check_sudo(password).await?;
-    job.system("Password accepted.").await;
+    if running_as_root() {
+        job.system("Running as root: no sudo password needed.").await;
+    } else {
+        job.system("Validating sudo password...").await;
+        check_sudo(password).await?;
+        job.system("Password accepted.").await;
+    }
     run_root_script_streamed(job, password, script, cwd).await
 }
 
@@ -494,13 +513,19 @@ async fn run_root_script_inner(
     let script_path = write_script(script).map_err(|e| CoreError::Other(format!("cannot write script: {e}")))?;
     let sender = job.line_sender();
     let script_str = script_path.to_string_lossy().to_string();
-    let args_ref: Vec<&str> = vec!["-S", "-p", "", "bash", script_str.as_str()];
+    // already root: run bash directly, stdin carries only the extra lines
+    let root = running_as_root();
+    let (program, args_ref, stdin): (&str, Vec<&str>, Vec<u8>) = if root {
+        ("bash", vec![script_str.as_str()], extra_stdin.unwrap_or_default().into_bytes())
+    } else {
+        ("sudo", vec!["-S", "-p", "", "bash", script_str.as_str()], format!("{password}\n{}", extra_stdin.unwrap_or_default()).into_bytes())
+    };
     let result = process::stream_job(
         job,
-        "sudo",
+        program,
         &args_ref,
         cwd,
-        Some(format!("{password}\n{}", extra_stdin.unwrap_or_default()).into_bytes()),
+        Some(stdin),
         move |is_err, line| {
             if let Some(w) = &watch {
                 if line.contains("lacks a signature by a trusted key") || line.contains("Permission denied") || line.contains("Host key verification failed") {

@@ -24,7 +24,7 @@ pub async fn machine_info() -> MachineInfo {
         .ok()
         .filter(|o| o.status == 0)
         .map(|o| o.stdout.trim().to_string());
-    MachineInfo { hostname, nixos_version, nix_version }
+    MachineInfo { hostname, nixos_version, nix_version, running_as_root: crate::deploy::running_as_root() }
 }
 
 /// Hosts according to `nix flake show --json`. Slow (evaluates the flake and

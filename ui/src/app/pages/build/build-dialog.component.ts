@@ -251,12 +251,14 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
             <mat-hint>The selector above acts on the target; this one acts on the machine you are sitting at.</mat-hint>
           </mat-form-field>
           @if (afterLocal !== 'none') {
-            <div class="warning-box" style="margin-top:10px"><mat-icon>power_settings_new</mat-icon><span>This machine will {{ afterLocal === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the deployment {{ afterAlways ? 'ends' : 'succeeds' }}. It asks the login manager first, which works from a normal desktop session; otherwise your sudo password below is used.</span></div>
+            <div class="warning-box" style="margin-top:10px"><mat-icon>power_settings_new</mat-icon><span>This machine will {{ afterLocal === 'reboot' ? 'reboot' : 'power off' }} about 5 seconds after the deployment {{ afterAlways ? 'ends' : 'succeeds' }}. {{ p.running_as_root ? 'The app runs as root, so no password is needed.' : 'It asks the login manager first, which works from a normal desktop session; otherwise your sudo password below is used.' }}</span></div>
+            @if (!p.running_as_root) {
             <mat-form-field appearance="outline" style="width:100%">
               <mat-label>Your sudo password on this machine (optional)</mat-label>
               <input matInput type="password" [(ngModel)]="password" autocomplete="off" />
               <mat-hint>Only needed when your session is not allowed to power off the machine by itself (for example over SSH). Checked when the job starts.</mat-hint>
             </mat-form-field>
+            }
           }
         }
         @if (after !== 'none' || (target() && afterLocal !== 'none')) {
@@ -313,12 +315,14 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
             <input matInput type="password" [(ngModel)]="secretsPassword" autocomplete="off" />
           </mat-form-field>
         }
-        @if (!target()) {
+        @if (!target() && !p.running_as_root) {
           <mat-form-field appearance="outline" style="width:100%; margin-top: 12px">
             <mat-label>Your sudo password</mat-label>
             <input matInput type="password" [(ngModel)]="password" autocomplete="current-password" (keyup.enter)="start()" />
             <mat-hint>Used once for this job, kept only in memory, never saved.</mat-hint>
           </mat-form-field>
+        } @else if (!target()) {
+          <div class="note" style="margin-top: 12px">The app runs as root: no sudo password is needed for this machine.</div>
         }
       }
     </mat-dialog-content>
@@ -457,7 +461,7 @@ export class BuildDialogComponent implements OnInit {
       if (!this.onTarget && c?.hardware_config === 'none' && !this.useWorkspaceHardware) return 'the target has no hardware configuration';
       return null;
     }
-    if (!this.password) return 'enter your sudo password below';
+    if (!this.password && !p.running_as_root) return 'enter your sudo password below';
     if (p.source_is_etc_nixos && !this.skipSync) return 'the working copy is /etc/nixos itself: tick "Skip sync"';
     if (this.buildHost() && this.builderNeedsPassword() && !this.targetSudoPassword) return 'enter the sudo password on the builder';
     return null;

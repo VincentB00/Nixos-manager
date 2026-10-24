@@ -152,8 +152,8 @@ export class RemoteComponent implements OnInit {
   generateKey() {
     this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '520px', data: {
       title: 'Root SSH key for builders',
-      message: 'Creates /root/.ssh/id_ed25519 if missing and shows its public key. Needs your sudo password.',
-      label: 'Sudo password', password: true, okLabel: 'Generate',
+      message: 'Creates /root/.ssh/id_ed25519 if missing and shows its public key.' + (this.ws.isRoot() ? ' The app runs as root, so no password is needed.' : ' Needs your sudo password.'),
+      label: this.ws.isRoot() ? undefined : 'Sudo password', password: true, okLabel: 'Generate',
       checkbox: { label: 'Also record a builder\'s host key (asks for its address next)', checked: false },
     } }).afterClosed().subscribe(r => {
       if (!r) return;

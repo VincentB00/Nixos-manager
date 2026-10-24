@@ -8,6 +8,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { ApiService, ApiFailure } from '../../api/api.service';
+import { WorkspaceService } from '../../core/workspace.service';
 import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import type { DeployTarget, Generation, OtherSystem, RemoteCheck, StoreUsage } from '../../api/generated';
 import { FormsModule } from '@angular/forms';
@@ -70,7 +71,7 @@ import { MatSelectModule } from '@angular/material/select';
                 <div class="meta">NixOS {{ g.nixos_version ?? '?' }}@if (g.kernel) { · kernel {{ g.kernel }} }</div>
               </div>
               @if (!g.current) {
-                <button mat-stroked-button (click)="rollback(g)" matTooltip="Make this generation the active one now and the default at boot (needs your sudo password)"><mat-icon>history</mat-icon> Roll back to this</button>
+                <button mat-stroked-button (click)="rollback(g)" matTooltip="Make this generation the active one now and the default at boot {{ ws.isRoot() ? '' : ' (needs your sudo password)' }}"><mat-icon>history</mat-icon> Roll back to this</button>
               }
             </div>
           } @empty {
@@ -125,6 +126,7 @@ export class SystemComponent implements OnInit {
   private api = inject(ApiService);
   private dialog = inject(MatDialog);
   private router = inject(Router);
+  ws = inject(WorkspaceService);
   gens = signal<Generation[]>([]);
   store = signal<StoreUsage | null>(null);
   busy = signal(false);
@@ -157,7 +159,7 @@ export class SystemComponent implements OnInit {
     const total = list.reduce((a, o) => a + Number(o.exclusive_size), 0);
     const t = this.target();
     const where = t ? (this.remoteHost() ?? t.name) : 'this machine';
-    const needPw = t ? this.needsRemotePassword() : true;
+    const needPw = t ? this.needsRemotePassword() : !this.ws.isRoot();
     this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '560px', data: {
       title: (list.length === 1 ? `Delete the build for ${list[0].host}` : `Delete ${list.length} builds for other machines`) + ` on ${where}?`,
       message: `${list.map(o => o.host + ' (' + o.nixos_version + ')').join(', ')} — frees about ${this.fmt(total)} once garbage is collected. Nothing on those machines changes; only the store on ${where} loses the copy.`,
@@ -214,7 +216,7 @@ export class SystemComponent implements OnInit {
   rollback(g: Generation) {
     const t = this.target();
     const where = t ? (this.remoteHost() ?? t.name) : 'this machine';
-    const needPw = t ? this.needsRemotePassword() : true;
+    const needPw = t ? this.needsRemotePassword() : !this.ws.isRoot();
     this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '520px', data: {
       title: `Roll back ${where} to generation #${g.number}?`,
       message: `${g.date} · NixOS ${g.nixos_version ?? '?'}. ${where} switches to that generation now (services restart as needed) and it becomes the default at boot. Your working folder is not changed, so the next Build goes back to your current configuration.`,
@@ -233,7 +235,7 @@ export class SystemComponent implements OnInit {
   gc(days: number) {
     const t = this.target();
     const where = t ? (this.remoteHost() ?? t.name) : 'this machine';
-    const needPw = t ? this.needsRemotePassword() : true;
+    const needPw = t ? this.needsRemotePassword() : !this.ws.isRoot();
     const keep = days < 0;
     this.dialog.open<PromptDialogComponent, PromptData, PromptResult>(PromptDialogComponent, { width: '520px', data: {
       title: keep ? `Collect garbage on ${where}?` : (days === 0 ? 'Delete all old generations' : `Delete generations older than ${days} days`) + ` on ${where}?`,

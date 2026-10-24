@@ -66,14 +66,33 @@ GC prompt, free-memory prompt. Note: in tmux send Escape and the next key
 in separate `send-keys` calls (otherwise it becomes Alt+key).
 Not in the TUI: file editing, wizard, git, secrets (use the web UI).
 
-## Free memory (m on the workspace screen) — added 2026-10-22
+## Free memory (m on the workspace screen) — added 2026-10-22, reworked 2026-10-23
 TUI-only port of Vincent's `clear-sessions.sh` (`/home/vincent/Desktop/code/private/nixos/script/clear-sessions.sh`).
 - `core::system::free_memory_script(my_session, my_user)` builds the root script: `loginctl terminate-session` for every
-  session except the caller's, `loginctl terminate-user` for every user except the caller and root, `sync`,
-  `echo 3 > /proc/sys/vm/drop_caches`, `free -h` before/after. Inputs are sanitised (alnum only) so they cannot break the quotes.
-- `core::system::free_memory(job, password, my_session, my_user)` runs it through `deploy::run_root_script` as a `system` job
-  so the output lands in the normal Job screen / log file.
-- TUI: `m` opens a yellow confirmation popup with a masked sudo password field (Enter runs, Esc cancels, empty password →
-  status message). Own session = `XDG_SESSION_ID` or `loginctl show-session self -p Id --value`; own user = `$USER`.
+  session except the caller's (prints user + class), `loginctl terminate-user` for every user except the caller and root,
+  then — new on 10-23 — **waits up to 60 s until the terminated sessions are really gone** (`loginctl show-session` fails),
+  sends `loginctl kill-session --signal=SIGKILL` to whatever is still alive, then `sync`, `echo 3 > drop_caches`, `free -h`,
+  the remaining sessions and the 8 largest processes by RSS. Inputs are sanitised (alnum only) so they cannot break the quotes.
+  Why: Vincent's first run showed `used 10Gi → 10Gi` because terminate-session only queues the stop; the desktop processes
+  were still exiting when the 2 s sleep ended, so the numbers (and possibly the cleanup, when something ignores SIGTERM)
+  were not comparable with the script run from a TTY. The log is now a true picture of what is left.
+- `core::system::free_memory(job, password, my_session, my_user)` runs it through `deploy::run_root_script` as a `system` job.
+- TUI: `m` opens the shared Prompt popup (password only when not root). Own session = `XDG_SESSION_ID` or
+  `loginctl show-session self -p Id --value` (the script also falls back to `self` when the value is empty); own user = `$USER`.
 - Not exposed in the web UI on purpose (it would kill the desktop session the browser lives in). Must be run from the TTY/SSH
-  session the build will run from. Never tested for real on Vincent's machine — only `bash -n` + the tmux popup flow.
+  session the build will run from. Never run for real by me — verified with a fake `loginctl` in PATH
+  (one session dying after 7 polls, one never → SIGKILL branch), `bash -n`, and the unit test `script_parses_and_protects_the_caller`.
+
+## Running as root (run.sh / TUI started with sudo) — 2026-10-23
+`deploy::running_as_root()` (uid 0 from /proc/self/status). When true: `check_sudo` is a no-op, `run_root_script_inner`
+runs `bash <script>` directly (stdin = only the extra lines, no password line), `deploy::run` and `run_root_script` log
+"Running as root: no sudo password needed." instead of validating. Daemon handlers that required a non-empty local
+password (deploy start without target, rollback, gc, delete-paths, root-key) accept an empty one when root.
+Exposed as `MachineInfo.running_as_root` (in `ConfigOverview.machine` and `/api/machine`) and `DeployPreflight.running_as_root`.
+Web UI: `WorkspaceService.isRoot` computed; build dialog hides both local password fields and the Start hint; System page
+`needPw` for this machine = `!isRoot`; Channels skips the sudo prompt; Remote root-key prompt drops the password input.
+TUI: no LocalPassword field, local Prompt popups have no password line, workspace shows a green "Running as root" line.
+Remote targets are unaffected (their own sudo rule still applies). Verified with `unshare -Ur` (fake uid 0): `/api/machine`
+→ `running_as_root: true`, root-key with empty password ran bash directly (then failed on /root as expected in a userns),
+TUI showed the root line and no password fields. Note: inside `unshare -Ur` the scratchpad /tmp is not visible — test
+folders must live under $HOME (used `~/.cache/nm-tui-test`, deleted afterwards).
