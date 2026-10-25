@@ -1,7 +1,13 @@
 # Terminal UI (2026-10-22, Vincent's request)
 
 `crates/tui` → binary `nixos-manager-tui` (ratatui 0.29 + crossterm 0.28,
-event-stream). `./run.sh --tui [FOLDER]` builds it when stale and execs it
+event-stream). `./run.sh` picks the mode automatically since 2026-10-25:
+`graphical_session()` = DISPLAY / WAYLAND_DISPLAY / XDG_SESSION_TYPE in
+{x11,wayland,mir} or `loginctl show-session self -p Type` (this session only,
+so a desktop left on another VT does not turn a TTY into browser mode; works
+under sudo). Graphical → daemon + browser, otherwise → TUI. `--gui` / `--tui`
+force a mode; `--dev/--watch/--listen/--no-open` imply gui; a bare FOLDER
+argument is the TUI's start folder. `./run.sh --tui [FOLDER]` builds it when stale and execs it
 (no daemon, no browser): it links `nixos-manager-core` directly and runs
 jobs in-process (`JobManager::new()`, `jobs.subscribe()` broadcast →
 mpsc `Msg::Job` into the UI loop). Same housekeeping as the web UI on open
