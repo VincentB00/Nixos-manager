@@ -20,13 +20,14 @@ import type { DeployTarget } from '../../api/generated';
   selector: 'app-remote',
   imports: [MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
-    .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     h2 { margin: 0; font-weight: 400; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
-    .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mat-sys-surface-container); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mat-sys-surface-container); flex-wrap: wrap; }
     .row:last-child { border-bottom: 0; }
-    .row .t { flex: 1; min-width: 0; }
-    .row .d { font-size: .82em; color: var(--mat-sys-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .t { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+    .row .d { font-size: .82em; color: var(--mat-sys-on-surface-variant); overflow-wrap: anywhere; }
+    .row .acts { display: flex; flex: none; margin-left: auto; }
     .note { font-size: .85em; color: var(--mat-sys-on-surface-variant); margin-top: 8px; line-height: 1.5; }
     .errors { padding: 8px 12px; border-radius: 8px; background: var(--mat-sys-error-container); color: var(--mat-sys-on-error-container); margin-bottom: 12px; font-size: .9em; }
     ol { margin: 6px 0; padding-left: 18px; line-height: 1.5; }
@@ -46,11 +47,13 @@ import type { DeployTarget } from '../../api/generated';
             <div class="row">
               <mat-icon>dns</mat-icon>
               <div class="t"><b>{{ t.name }}</b><div class="d mono">{{ t.ssh_target }}{{ t.port ? ':' + t.port : '' }}{{ t.flake_host ? ' · #' + t.flake_host : '' }}{{ t.build_host ? ' · build on ' + t.build_host : '' }}{{ t.use_remote_sudo ? ' · remote sudo' : '' }}</div></div>
-              <button mat-icon-button matTooltip="Set up key access (install this app's SSH key on the target using its password once)" (click)="setupKey(t)"><mat-icon>vpn_key</mat-icon></button>
-              <button mat-icon-button matTooltip="Test the SSH connection" (click)="test(t)"><mat-icon>network_check</mat-icon></button>
-              <button mat-icon-button matTooltip="Copy this target's /etc/nixos/hardware-configuration.nix into the working copy (replaces the file there)" (click)="pullHardware(t)"><mat-icon>download</mat-icon></button>
-              <button mat-icon-button matTooltip="Edit" (click)="edit(t)"><mat-icon>edit</mat-icon></button>
-              <button mat-icon-button matTooltip="Remove" (click)="remove(t)"><mat-icon>delete</mat-icon></button>
+              <span class="acts">
+                <button mat-icon-button matTooltip="Set up key access (install this app's SSH key on the target using its password once)" (click)="setupKey(t)"><mat-icon>vpn_key</mat-icon></button>
+                <button mat-icon-button matTooltip="Test the SSH connection" (click)="test(t)"><mat-icon>network_check</mat-icon></button>
+                <button mat-icon-button matTooltip="Copy this target's /etc/nixos/hardware-configuration.nix into the working copy (replaces the file there)" (click)="pullHardware(t)"><mat-icon>download</mat-icon></button>
+                <button mat-icon-button matTooltip="Edit" (click)="edit(t)"><mat-icon>edit</mat-icon></button>
+                <button mat-icon-button matTooltip="Remove" (click)="remove(t)"><mat-icon>delete</mat-icon></button>
+              </span>
             </div>
           } @empty { <div class="muted">No targets yet. Add one, then pick it under "Deploy to" in the Build dialog.</div> }
           <div class="note">The configuration is evaluated and built on this machine from the working copy, then only the result is copied to the target over SSH and activated there. Deployments log in with an SSH key: use the <mat-icon style="font-size:16px;width:16px;height:16px;vertical-align:middle">vpn_key</mat-icon> button to set that up with the target's password once. When your user is not yet trusted by nix on the target, or sudo there needs a password, the build dialog asks for the target's sudo password and grants trust temporarily for that deployment. By default the target's own <span class="mono">/etc/nixos/hardware-configuration.nix</span> is used for the build and the working copy's file is ignored; the build dialog has a checkbox to use the working copy's file instead. The <mat-icon style="font-size:16px;width:16px;height:16px;vertical-align:middle">download</mat-icon> button copies the target's file into the working copy (kept as is when the folder is opened again, until you edit it).</div>

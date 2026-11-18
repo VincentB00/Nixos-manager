@@ -12,7 +12,8 @@ import type { OptionDoc } from '../api/generated';
   imports: [MatDialogModule, MatButtonModule, MatIconModule, MatProgressBarModule],
   styles: [`
     .desc { white-space: pre-wrap; line-height: 1.5; margin: 8px 0 12px; }
-    dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: .9em; }
+    dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: .9em; }
+    dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
     dt { color: var(--mat-sys-on-surface-variant); }
     code, .mono { font-family: monospace; }
   `],

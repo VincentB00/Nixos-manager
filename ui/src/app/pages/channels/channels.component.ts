@@ -21,11 +21,11 @@ import type { ChannelAction, ChannelEntry, ChannelScope, ChannelsInfo } from '..
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
     h2 { margin: 0; font-weight: 400; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
-    .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mat-sys-surface-container); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mat-sys-surface-container); min-width: 0; flex-wrap: wrap; }
     .row:last-child { border-bottom: 0; }
-    .row .t { flex: 1; min-width: 0; }
-    .row .d { font-size: .82em; color: var(--mat-sys-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .t { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+    .row .d { font-size: .82em; color: var(--mat-sys-on-surface-variant); overflow-wrap: anywhere; }
     .note { font-size: .85em; color: var(--mat-sys-on-surface-variant); margin-top: 8px; line-height: 1.45; }
     .errors { padding: 8px 12px; border-radius: 8px; background: var(--mat-sys-error-container); color: var(--mat-sys-on-error-container); margin-bottom: 12px; font-size: .9em; }
     mat-card-actions { gap: 6px; flex-wrap: wrap; }

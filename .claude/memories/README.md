@@ -23,6 +23,7 @@ decision is made, something is learned, or work is completed. Dates are absolute
 | 17-tui.md | Terminal UI (`./run.sh --tui`): pick folder, build/deploy, validate, generations, job log |
 | 16-git.md | Git page: branches, status/diffs, generated commit messages, push/fetch/pull, askpass credentials |
 | 15-hardware.md | hardware-configuration.nix rules: system copy is the source of truth; sync on open, confirm on local build, target's own file for remote deploys |
+| 18-ui-layout.md | Flexible layout rules (wrap lists, toolbar, grids, dialogs), the `t_flex.py` audit at five widths, and the traps found (pill radius, inline overflow-wrap, media-rule order) |
 
 Conventions for these notes:
 - One topic per file, numbered for reading order.

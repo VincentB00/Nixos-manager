@@ -20,14 +20,17 @@ import { MatSelectModule } from '@angular/material/select';
   selector: 'app-system',
   imports: [FormsModule, MatFormFieldModule, MatSelectModule, MatButtonModule, MatCardModule, MatIconModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
-    .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .head .meta { flex: 1 1 240px; }
+    .head mat-form-field { width: min(260px, 100%); }
     h2 { margin: 0; font-weight: 400; }
-    .cards { display: grid; grid-template-columns: minmax(360px, 2fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
+    .cards { display: grid; grid-template-columns: minmax(min(100%, 360px), 2fr) minmax(min(100%, 300px), 1fr); gap: 16px; align-items: start; }
     @media (max-width: 1000px) { .cards { grid-template-columns: 1fr; } }
-    .gen { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--mat-sys-surface-container); }
+    .gen { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--mat-sys-surface-container); flex-wrap: wrap; }
     .gen:last-child { border-bottom: 0; }
     .gen .n { font-family: monospace; min-width: 3em; text-align: right; }
-    .gen .d { flex: 1; min-width: 0; }
+    .gen .d { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+    .gen > button, .gen > .acts { margin-left: auto; }
     .gen .meta { font-size: .85em; color: var(--mat-sys-on-surface-variant); }
     .gen.current { background: var(--mat-sys-surface-container); border-radius: 8px; padding: 8px; }
     .bar { height: 10px; border-radius: 5px; background: var(--mat-sys-surface-container-high); overflow: hidden; margin: 8px 0; }
@@ -39,7 +42,7 @@ import { MatSelectModule } from '@angular/material/select';
     <div class="head">
       <h2>System</h2>
       @if (targets().length) {
-        <mat-form-field appearance="outline" subscriptSizing="dynamic" style="width:260px; margin:0 0 0 8px">
+        <mat-form-field appearance="outline" subscriptSizing="dynamic" style="margin:0">
           <mat-label>Machine</mat-label>
           <mat-select [ngModel]="machine()" (ngModelChange)="selectMachine($event)">
             <mat-option value="">This machine</mat-option>

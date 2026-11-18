@@ -22,15 +22,16 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
   imports: [FormsModule, SlicePipe, MatButtonModule, MatCardModule, MatFormFieldModule, MatIconModule, MatInputModule, MatListModule, MatProgressBarModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     :host { display: block; min-height: 100%; padding: 32px 16px; box-sizing: border-box; }
-    .wrap { max-width: 880px; margin: 0 auto; display: grid; gap: 16px; min-width: 0; }
+    .wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; min-width: 0; }
     .wrap > * { min-width: 0; }
     .mono { overflow-wrap: anywhere; }
     h1 { font-weight: 400; margin: 0 0 4px; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
     .grid > * { min-width: 0; }
     @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
-    .path-row { display: flex; gap: 8px; align-items: center; }
-    .path-row mat-form-field { flex: 1; min-width: 0; }
+    .path-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .path-row mat-form-field { flex: 1 1 260px; min-width: 0; }
+    .path-row .btns { display: flex; gap: 8px; margin-left: auto; }
     .browser { max-height: 320px; overflow: auto; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; }
     .entry { cursor: pointer; }
     .entry:hover { background: var(--mat-sys-surface-container); }
@@ -54,8 +55,10 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
               <mat-label>Configuration folder</mat-label>
               <input matInput [(ngModel)]="path" (keyup.enter)="open(path)" placeholder="/etc/nixos or ~/nixos" class="mono" />
             </mat-form-field>
-            <button mat-stroked-button (click)="browse(path)"><mat-icon>folder_open</mat-icon> Browse</button>
-            <button mat-flat-button (click)="open(path)" [disabled]="!path || opening()"><mat-icon>login</mat-icon> Open</button>
+            <span class="btns">
+              <button mat-stroked-button (click)="browse(path)"><mat-icon>folder_open</mat-icon> Browse</button>
+              <button mat-flat-button (click)="open(path)" [disabled]="!path || opening()"><mat-icon>login</mat-icon> Open</button>
+            </span>
           </div>
           @if (opening()) { <mat-progress-bar mode="indeterminate" /> }
         </mat-card-content>
@@ -66,7 +69,7 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
           <mat-card-header><mat-card-title>Recent</mat-card-title></mat-card-header>
           <mat-card-content>
             @if (recent().length === 0) { <div class="muted">Nothing opened yet.</div> }
-            <mat-nav-list>
+            <mat-nav-list class="wrap-list">
               @for (r of recent(); track r.path) {
                 <a mat-list-item (click)="open(r.path)">
                   <mat-icon matListItemIcon>history</mat-icon>
@@ -84,7 +87,7 @@ import type { BrowseResult, LocationSuggestion, RecentLocation } from '../../api
           <mat-card-content>
             @if (scanning()) { <mat-progress-bar mode="indeterminate" /> }
             @else if (suggestions().length === 0) { <div class="muted">No flake.nix or configuration.nix found in the usual places.</div> }
-            <mat-nav-list>
+            <mat-nav-list class="wrap-list">
               @for (s of suggestions(); track s.path) {
                 <a mat-list-item (click)="open(s.path)">
                   <mat-icon matListItemIcon>{{ s.kind === 'flake' ? 'ac_unit' : 'description' }}</mat-icon>

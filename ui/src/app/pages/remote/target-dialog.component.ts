@@ -31,9 +31,9 @@ import type { DeployTarget } from '../../api/generated';
         </mat-form-field>
       </div>
       <div class="muted" style="font-size:.85em; margin:0 0 12px">Key-based login must work from a terminal as your user, or use "Set up key access" on the Remote page after saving.</div>
-      <mat-form-field appearance="outline" style="width:100%"><mat-label>Flake host (nixosConfigurations.&lt;name&gt;)</mat-label>
+      <mat-form-field appearance="outline" style="width:100%"><mat-label>Flake host</mat-label>
         <input matInput [ngModel]="t.flake_host ?? ''" (ngModelChange)="t.flake_host = $event || null" class="mono" placeholder="main" />
-        <mat-hint>Leave empty to use the host selected in the toolbar.</mat-hint>
+        <mat-hint>The nixosConfigurations.&lt;name&gt; to build for this target. Leave empty to use the host selected in the toolbar.</mat-hint>
       </mat-form-field>
       
       <mat-checkbox [(ngModel)]="t.use_remote_sudo">Use sudo on the target for activation (needed unless the SSH user is root)</mat-checkbox>

@@ -54,6 +54,42 @@ html { --nm-warning: #8a6d00; --nm-warning-bg: rgba(255, 193, 7, .16); --nm-warn
 .tag.warning { color: var(--nm-warning); border-color: var(--nm-warning-border); }
 .error-box { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent); border-left: 4px solid var(--mat-sys-error); color: inherit; margin-bottom: 12px; font-size: .9em; }
 .error-box mat-icon { color: var(--mat-sys-error); flex: none; }
-.flex { display: flex; align-items: center; gap: 8px; }
+.flex { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .spacer { flex: 1 1 auto; }
+
+/* ── Flexible layout defaults ──────────────────────────────────────────────
+   Nothing may force a horizontal scrollbar: cards and grid cells shrink,
+   long words/paths break, media and <pre> stay inside their box. */
+*, *::before, *::after { box-sizing: border-box; }
+img, svg, video, canvas { max-width: 100%; }
+pre { max-width: 100%; overflow: auto; }
+.mat-mdc-card, mat-card-content, mat-card-header, .mat-mdc-card-header-text { min-width: 0; }
+/* Block-level titles may break long words; inline elements keep their natural
+   min-content width, otherwise flex rows squeeze them to one letter per line. */
+mat-card-title, mat-card-subtitle, h1, h2, h3, h4, p, li, dd, .note, .meta, .muted { overflow-wrap: anywhere; }
+mat-card-actions { flex-wrap: wrap; }
+/* Lists that show paths or long titles: wrap over several lines instead of clipping. */
+.wrap-list .mat-mdc-list-item, .wrap-list .mdc-list-item { height: auto !important; min-height: 56px; padding-top: 6px; padding-bottom: 6px; }
+/* M3 nav items are pills (9999px radius): a tall multi-line item would turn into a circle and clip its own corners. */
+.wrap-list .mat-mdc-list-item { border-radius: 12px !important; --mat-list-active-indicator-shape: 12px; }
+.wrap-list .mdc-list-item__primary-text, .wrap-list .mdc-list-item__secondary-text, .wrap-list [matListItemTitle], .wrap-list [matListItemLine] { white-space: normal !important; overflow-wrap: anywhere; line-height: 1.35 !important; }
+.wrap-list .mdc-list-item__content { overflow: visible; align-self: center; }
+/* MDC sizes two-line items with ::before/::after spacers that assume single lines; drop them. */
+.wrap-list .mdc-list-item__primary-text::before, .wrap-list .mdc-list-item__primary-text::after, .wrap-list .mdc-list-item__secondary-text::before { display: none !important; }
+.wrap-list .mdc-list-item__primary-text { margin: 0 !important; }
+.wrap-list .mdc-list-item__secondary-text { margin: 2px 0 0 !important; display: block; }
+.wrap-list .mdc-list-item__start { margin-top: 0 !important; align-self: center !important; }
+.wrap-list .mdc-list-item__end, .wrap-list [matListItemMeta] { flex: none; align-self: center !important; }
+/* Expansion panel headers: let the title wrap and the description move below it. */
+.mat-expansion-panel-header { height: auto !important; min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
+.mat-expansion-panel-header .mat-content { flex-wrap: wrap; row-gap: 2px; overflow: visible; }
+.mat-expansion-panel-header mat-panel-title, .mat-expansion-panel-header mat-panel-description { min-width: 0; overflow-wrap: anywhere; }
+/* Dialogs use the whole width of a phone screen. */
+@media (max-width: 600px) {
+  .cdk-overlay-pane.mat-mdc-dialog-panel { max-width: calc(100vw - 16px) !important; width: calc(100vw - 16px) !important; }
+  .mat-mdc-dialog-content { padding-left: 16px !important; padding-right: 16px !important; }
+}
+/* Key/value description lists never push their values out of the card. */
+dl { min-width: 0; }
+dl dd { min-width: 0; overflow-wrap: anywhere; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 4px; }

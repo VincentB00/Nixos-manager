@@ -20,7 +20,6 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
   selector: 'app-node',
   imports: [FormsModule, NgTemplateOutlet, MatButtonModule, MatIconModule, MatSlideToggleModule, MatTooltipModule, TooltipAriaDirective, MatMenuModule, CodeEditorComponent],
   styles: [`
-    @media (max-width: 700px) { .head { flex-wrap: wrap; } .head input, .head .inline { min-width: 120px !important; max-width: 100%; } .add-row { flex-wrap: wrap; } }
     :host { display: block; }
     .node { border-left: 2px solid transparent; padding: 2px 0 2px 8px; margin: 2px 0; }
     .node:hover { border-left-color: var(--mat-sys-outline-variant); }
@@ -30,7 +29,7 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
     .kind { font-size: .7em; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 4px; background: var(--mat-sys-surface-container-high); color: var(--mat-sys-on-surface-variant); }
     .with { font-size: .75em; padding: 1px 6px; border-radius: 10px; border: 1px dashed var(--mat-sys-outline-variant); }
     .comment { font-size: .85em; color: var(--mat-sys-on-surface-variant); margin-left: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .actions { display: flex; gap: 0; opacity: 0; transition: opacity .15s; flex: none; margin-left: auto; }
+    .actions { display: flex; gap: 0; opacity: 0; transition: opacity .15s; flex: none; margin-left: auto; flex-wrap: wrap; max-width: 100%; }
     .node:hover > .head > .actions, .node:focus-within > .head > .actions { opacity: 1; }
     .children { margin-left: 14px; padding-left: 8px; border-left: 1px solid var(--mat-sys-surface-container-high); }
     input.inline { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface); color: inherit; min-width: 220px; }
@@ -43,7 +42,14 @@ import { CodeEditorComponent } from '../../shared/code-editor.component';
     .vars-btn { width: 30px; height: 30px; line-height: 30px; padding: 0; }
     .vars-btn mat-icon { font-size: 18px; width: 18px; height: 18px; }
     .mi-val { font-size: .8em; color: var(--mat-sys-on-surface-variant); margin-left: 8px; }
-    select.set { font: inherit; font-size: .8em; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface-container); color: inherit; max-width: 180px; }
+    select.set { font: inherit; font-size: .8em; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface-container); color: inherit; max-width: min(180px, 100%); }
+    .comment { max-width: 100%; }
+    @media (max-width: 700px) {
+      .head { flex-wrap: wrap; }
+      .head input.inline, .head .inline { flex: 1 1 120px; width: auto; min-width: 100px !important; max-width: 100%; }
+      .add-row { flex-wrap: wrap; }
+      .comment { white-space: normal; overflow: visible; text-overflow: clip; flex-basis: 100%; margin-left: 0; }
+    }
   `],
   template: `
     <div class="node" [class.disabled]="node().disabled">

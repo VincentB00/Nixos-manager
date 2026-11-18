@@ -22,13 +22,13 @@ import type { FlakeInfo, FlakeInput, FlakeOp, FlakeVar } from '../../api/generat
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     h2 { margin: 0; font-weight: 400; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; }
     mat-card { min-width: 0; }
-    .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mat-sys-surface-container); min-width: 0; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mat-sys-surface-container); min-width: 0; flex-wrap: wrap; }
     .row:last-child { border-bottom: 0; }
-    .row .t { flex: 1; min-width: 0; }
+    .row .t { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
     .row .t b { font-weight: 500; }
-    .row .d { font-size: .82em; color: var(--mat-sys-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .d { font-size: .82em; color: var(--mat-sys-on-surface-variant); overflow-wrap: anywhere; }
     .tag { font-size: .7em; padding: 1px 6px; border-radius: 4px; background: var(--mat-sys-surface-container-high); text-transform: uppercase; letter-spacing: .04em; flex: none; }
     .lock { font-size: .78em; color: var(--mat-sys-on-surface-variant); }
     .errors { padding: 8px 12px; border-radius: 8px; background: var(--mat-sys-error-container); color: var(--mat-sys-on-error-container); margin-bottom: 12px; font-size: .9em; }

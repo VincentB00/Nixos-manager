@@ -25,10 +25,10 @@ import type { GitBranch, GitFileStatus, GitInfo } from '../../api/generated';
   styles: [`
     .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     h2 { margin: 0; font-weight: 400; }
-    .cards { display: grid; grid-template-columns: minmax(380px, 1.3fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
+    .cards { display: grid; grid-template-columns: minmax(min(100%, 380px), 1.3fr) minmax(min(100%, 320px), 1fr); gap: 16px; align-items: start; }
     @media (max-width: 1000px) { .cards { grid-template-columns: 1fr; } }
-    .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
-    .row .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: .92em; }
+    .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
+    .row .p { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; font-family: monospace; font-size: .92em; }
     .state { font-size: .72em; padding: 1px 6px; border-radius: 4px; background: var(--mat-sys-surface-container-high); text-transform: uppercase; letter-spacing: .04em; flex: none; }
     .state.added, .state.untracked { color: var(--mat-sys-primary); }
     .state.deleted { color: var(--mat-sys-error); }

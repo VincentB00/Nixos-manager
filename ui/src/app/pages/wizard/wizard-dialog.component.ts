@@ -31,8 +31,8 @@ export interface WizardData {
   selector: 'app-wizard-dialog',
   imports: [FormsModule, NgTemplateOutlet, SlicePipe, MatDialogModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, MatSlideToggleModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
-    mat-dialog-content { min-height: 420px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
+    mat-dialog-content { min-height: min(420px, 60vh); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; margin-top: 8px; }
     .card { border: 1px solid var(--mat-sys-outline-variant); border-radius: 12px; padding: 14px; cursor: pointer; display: flex; gap: 12px; align-items: flex-start; }
     .card:hover { background: var(--mat-sys-surface-container); border-color: var(--mat-sys-primary); }
     .card mat-icon { color: var(--mat-sys-primary); flex: none; }
@@ -57,7 +57,7 @@ export interface WizardData {
     .chip button mat-icon { font-size: 16px; width: 16px; height: 16px; }
     .doc { background: var(--mat-sys-surface-container); border-radius: 8px; padding: 10px 12px; font-size: .9em; margin: 8px 0; }
     .doc .desc { white-space: pre-wrap; }
-    .doc dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 8px 0 0; font-size: .85em; }
+    .doc dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 8px 0 0; font-size: .85em; }
     .doc dt { color: var(--mat-sys-on-surface-variant); } .doc dd { margin: 0; }
     .note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: 8px; background: var(--mat-sys-surface-container-high); font-size: .9em; margin-top: 8px; }
     .warn { color: var(--mat-sys-error); font-size: .9em; }

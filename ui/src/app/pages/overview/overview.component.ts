@@ -16,8 +16,8 @@ interface TreeRow { file: string; depth: number; enabled: boolean; via: ImportRe
   selector: 'app-overview',
   imports: [RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 16px; }
-    .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: .9em; margin: 0; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 16px; margin-bottom: 16px; }
+    .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: .9em; margin: 0; }
     .kv dt { color: var(--mat-sys-on-surface-variant); }
     .kv dd { margin: 0; }
     .tree { font-size: .92em; }
@@ -25,11 +25,16 @@ interface TreeRow { file: string; depth: number; enabled: boolean; via: ImportRe
     .row a { text-decoration: none; color: inherit; }
     .row a:hover { text-decoration: underline; }
     .row.off { opacity: .5; }
-    .row .ns { display: flex; gap: 4px; flex-wrap: wrap; }
+    .row .ns { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; min-width: 0; }
     .ns span { font-size: .72em; padding: 1px 6px; border-radius: 10px; background: var(--mat-sys-surface-container-high); }
     .tag { font-size: .72em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--mat-sys-outline-variant); }
     .tag.missing { color: var(--mat-sys-error); border-color: var(--mat-sys-error); }
-    .desc { font-size: .8em; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .desc { font-size: .8em; flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (max-width: 760px) {
+      .row { flex-wrap: wrap; }
+      .row .desc { max-width: none; white-space: normal; flex: 1 1 100%; overflow: visible; overflow-wrap: anywhere; }
+      .row .ns { justify-content: flex-start; margin-left: 0; flex-basis: 100%; }
+    }
     .guide { line-height: 1.5; }
   `],
   template: `
@@ -89,7 +94,7 @@ interface TreeRow { file: string; depth: number; enabled: boolean; via: ImportRe
             @if (r.cyclic) { <span class="tag">already shown</span> }
             @if (r.summary && !r.summary.parse_ok) { <span class="tag missing">syntax error</span> }
             <span class="spacer"></span>
-            @if (r.summary?.description) { <span class="muted desc">{{ r.summary!.description }}</span> }
+            @if (r.summary?.description) { <span class="muted desc" [matTooltip]="r.summary!.description">{{ r.summary!.description }}</span> }
             <span class="ns">@for (n of (r.summary?.namespaces ?? []).slice(0, 5); track n) { <span>{{ n }}</span> }</span>
           </div>
         }

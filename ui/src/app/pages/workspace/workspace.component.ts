@@ -39,11 +39,29 @@ try { applyTheme((localStorage.getItem('nixos-manager.theme') as 'system' | 'lig
     .file-item.hit .ln { display: inline-block; min-width: 2.6em; color: var(--mat-sys-on-surface-variant); font-family: monospace; }
     .file-item.hit [matListItemTitle] { font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 12px; }
     :host { display: flex; flex-direction: column; height: 100vh; }
-    mat-toolbar { gap: 8px; }
-    .path { font-size: 0.85em; opacity: .85; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    mat-sidenav-container { flex: 1; }
-    mat-sidenav { width: 300px; }
-    .content { padding: 16px 24px; max-width: 1200px; }
+    /* The toolbar wraps onto a second row instead of pushing Build off-screen. */
+    mat-toolbar.mat-toolbar-single-row { gap: 4px 8px; height: auto; min-height: 64px; flex-wrap: wrap; justify-content: flex-end; padding: 4px 8px; }
+    mat-toolbar .brand { color: inherit; text-decoration: none; white-space: nowrap; }
+    /* basis 0: the path shrinks before anything wraps, and grows to at most 40vw */
+    .path { font-size: 0.85em; opacity: .85; flex: 1 1 0; min-width: 0; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lbl { margin-left: 4px; }
+    @media (max-width: 1000px) { .path { display: none; } }
+    .narrow-only { display: none; }
+    @media (max-width: 760px) {
+      .lbl { display: none; }
+      .narrow-hide { display: none !important; }
+      .narrow-only { display: inline-flex; }
+      mat-toolbar.mat-toolbar-single-row { --mdc-icon-button-state-layer-size: 40px; gap: 0 2px; padding: 4px; }
+      mat-toolbar .mat-mdc-icon-button { padding: 8px; }
+    }
+    @media (max-width: 560px) { .brand { display: none; } }
+    @media (max-width: 760px) {
+      mat-toolbar .mat-mdc-button, mat-toolbar .mat-mdc-unelevated-button, mat-toolbar .mat-mdc-outlined-button { min-width: 0; padding: 0 10px; }
+      mat-toolbar .mat-mdc-button > .mat-icon, mat-toolbar .mat-mdc-unelevated-button > .mat-icon, mat-toolbar .mat-mdc-outlined-button > .mat-icon { margin-right: 0; }
+    }
+    mat-sidenav-container { flex: 1; min-height: 0; }
+    mat-sidenav { width: min(300px, 85vw); }
+    .content { padding: clamp(8px, 2vw, 24px); max-width: 1400px; min-width: 0; }
     .file-item { font-size: 0.9em; }
     .file-item.disabled { opacity: .55; }
     .group { font-size: .75em; text-transform: uppercase; letter-spacing: .05em; padding: 12px 16px 4px; color: var(--mat-sys-on-surface-variant); }
@@ -57,34 +75,41 @@ try { applyTheme((localStorage.getItem('nixos-manager.theme') as 'system' | 'lig
   template: `
     <mat-toolbar>
       <button mat-icon-button (click)="sidenavOpen.set(!sidenavOpen())" [matTooltip]="sidenavOpen() ? 'Hide the file list' : 'Show the file list'"><mat-icon>{{ sidenavOpen() ? 'menu_open' : 'menu' }}</mat-icon></button>
-      <a mat-icon-button routerLink="/" matTooltip="Choose another folder"><mat-icon>home</mat-icon></a>
-      <a routerLink="overview" queryParamsHandling="merge" style="color:inherit; text-decoration:none">Nixos-manager</a>
+      <a mat-icon-button routerLink="/" class="narrow-hide" matTooltip="Choose another folder"><mat-icon>home</mat-icon></a>
+      <a routerLink="overview" queryParamsHandling="merge" class="brand">Nixos-manager</a>
       <span class="path mono muted">{{ ws.path() }}</span>
       <span class="spacer"></span>
       @if (hosts().length > 0) {
         @if (ws.gitInfo(); as g) { @if (g.is_repo) {
-          <button mat-button routerLink="git" queryParamsHandling="merge" [matTooltip]="'git branch · ' + (g.files.length ? g.files.length + ' uncommitted change(s)' : 'clean')"><mat-icon>fork_right</mat-icon> {{ g.detached ? 'detached' : (g.branch ?? '?') }}@if (g.files.length) { <span class="tag warning" style="margin-left:6px">{{ g.files.length }}</span> }</button>
+          <button mat-button routerLink="git" queryParamsHandling="merge" [matTooltip]="'git branch · ' + (g.files.length ? g.files.length + ' uncommitted change(s)' : 'clean')"><mat-icon>fork_right</mat-icon><span class="lbl">{{ g.detached ? 'detached' : (g.branch ?? '?') }}</span>@if (g.files.length) { <span class="tag warning" style="margin-left:6px">{{ g.files.length }}</span> }</button>
         } }
-        <button mat-button [matMenuTriggerFor]="hostMenu"><mat-icon>dns</mat-icon> {{ ws.selectedHost() ?? 'host' }}</button>
+        <button mat-button [matMenuTriggerFor]="hostMenu" [matTooltip]="'Host: ' + (ws.selectedHost() ?? 'none')"><mat-icon>dns</mat-icon><span class="lbl">{{ ws.selectedHost() ?? 'host' }}</span></button>
         <mat-menu #hostMenu="matMenu">
           @for (h of hosts(); track h) { <button mat-menu-item (click)="ws.selectHost(h)">{{ h }}</button> }
         </mat-menu>
       }
-      <button mat-icon-button [matMenuTriggerFor]="themeMenu" matTooltip="Appearance"><mat-icon>{{ theme() === 'dark' ? 'dark_mode' : theme() === 'light' ? 'light_mode' : 'brightness_auto' }}</mat-icon></button>
+      <button mat-icon-button class="narrow-hide" [matMenuTriggerFor]="themeMenu" matTooltip="Appearance"><mat-icon>{{ theme() === 'dark' ? 'dark_mode' : theme() === 'light' ? 'light_mode' : 'brightness_auto' }}</mat-icon></button>
       <mat-menu #themeMenu="matMenu">
         <button mat-menu-item (click)="setTheme('system')"><mat-icon>brightness_auto</mat-icon> Follow the system</button>
         <button mat-menu-item (click)="setTheme('light')"><mat-icon>light_mode</mat-icon> Light</button>
         <button mat-menu-item (click)="setTheme('dark')"><mat-icon>dark_mode</mat-icon> Dark</button>
       </mat-menu>
-      <button mat-icon-button (click)="ws.reload()" matTooltip="Rescan folder"><mat-icon>refresh</mat-icon></button>
+      <button mat-icon-button class="narrow-hide" (click)="ws.reload()" matTooltip="Rescan folder"><mat-icon>refresh</mat-icon></button>
+      <!-- narrow screens: the secondary actions move into one menu -->
+      <button mat-icon-button class="narrow-only" [matMenuTriggerFor]="moreMenu" matTooltip="More"><mat-icon>more_vert</mat-icon></button>
+      <mat-menu #moreMenu="matMenu">
+        <button mat-menu-item (click)="ws.reload()"><mat-icon>refresh</mat-icon> Rescan folder</button>
+        <button mat-menu-item [matMenuTriggerFor]="themeMenu"><mat-icon>contrast</mat-icon> Appearance</button>
+        <a mat-menu-item routerLink="/"><mat-icon>home</mat-icon> Choose another folder</a>
+      </mat-menu>
       <a mat-icon-button routerLink="jobs" queryParamsHandling="merge" matTooltip="Jobs">
         <mat-icon [matBadge]="runningCount() || null" [class.running]="runningCount() > 0">assignment</mat-icon>
       </a>
       @if (ws.buildStatus()?.changed_files?.length; as n) {
-        <button mat-button class="pending" (click)="build()" [matTooltip]="'Changed since the last successful build (' + (ws.buildStatus()!.last_build_at ?? '').slice(0, 16).replace('T', ' ') + '): ' + ws.buildStatus()!.changed_files.join(', ') + '. Press Build to apply.'"><mat-icon>pending_actions</mat-icon> {{ n }} {{ n === 1 ? 'change' : 'changes' }} to apply</button>
+        <button mat-button class="pending" (click)="build()" [matTooltip]="'Changed since the last successful build (' + (ws.buildStatus()!.last_build_at ?? '').slice(0, 16).replace('T', ' ') + '): ' + ws.buildStatus()!.changed_files.join(', ') + '. Press Build to apply.'"><mat-icon>pending_actions</mat-icon> {{ n }}<span class="lbl">{{ n === 1 ? 'change' : 'changes' }} to apply</span></button>
       }
-      <button mat-stroked-button (click)="validate()" matTooltip="Check syntax and evaluate the whole configuration without changing anything (no password needed)"><mat-icon>fact_check</mat-icon> Validate</button>
-      <button mat-flat-button (click)="build()"><mat-icon>build</mat-icon> Build</button>
+      <button mat-stroked-button (click)="validate()" matTooltip="Check syntax and evaluate the whole configuration without changing anything (no password needed)"><mat-icon>fact_check</mat-icon><span class="lbl">Validate</span></button>
+      <button mat-flat-button (click)="build()" matTooltip="Build and apply"><mat-icon>build</mat-icon><span class="lbl">Build</span></button>
     </mat-toolbar>
     @if (ws.loading()) { <mat-progress-bar mode="indeterminate" /> }
 

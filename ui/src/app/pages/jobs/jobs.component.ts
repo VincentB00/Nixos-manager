@@ -19,13 +19,15 @@ import type { JobLogFile } from '../../api/generated';
   imports: [RouterLink, SlicePipe, MatListModule, MatIconModule, MatExpansionModule, MatButtonModule, MatTooltipModule, TooltipAriaDirective],
   styles: [`
     mat-expansion-panel-header { height: auto !important; min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
-    mat-expansion-panel-header mat-panel-title { white-space: normal; word-break: break-word; min-width: 0; }
-    mat-expansion-panel-header mat-panel-description { flex: 0 0 auto; margin-left: 12px; white-space: nowrap; }
+    mat-expansion-panel-header mat-panel-title { flex: 1 1 240px; min-width: 0; white-space: normal; overflow-wrap: anywhere; align-items: center; }
+    mat-expansion-panel-header mat-panel-title mat-icon { flex: none; }
+    mat-expansion-panel-header mat-panel-description { flex: 0 1 auto; margin-left: 0; margin-right: 12px; white-space: normal; min-width: 0; }
+    .hist-head { display: flex; align-items: center; gap: 12px; margin-top: 24px; flex-wrap: wrap; }
   `],
   template: `
     <h2>Jobs</h2>
     @if (list().length === 0) { <div class="muted">No jobs yet. Validate or Build in the toolbar starts one.</div> }
-    <mat-nav-list>
+    <mat-nav-list class="wrap-list">
       @for (j of list(); track j.id) {
         <a mat-list-item [routerLink]="['./', j.id]" queryParamsHandling="merge">
           <mat-icon matListItemIcon [class.error-text]="j.status === 'failed'">{{ icon(j.status) }}</mat-icon>
@@ -36,7 +38,7 @@ import type { JobLogFile } from '../../api/generated';
     </mat-nav-list>
 
     @if (history().length) {
-      <div style="display:flex; align-items:center; gap:12px; margin-top:24px">
+      <div class="hist-head">
         <h3 style="font-weight:400; margin:0">Earlier logs on disk</h3>
         <span class="muted" style="font-size:.85em">{{ history().length }} file(s) · {{ totalSize() }}</span>
         <span class="spacer"></span>
