@@ -11,6 +11,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { ApiService, ApiFailure } from '../../api/api.service';
 import { JobsService } from '../../api/jobs.service';
 import { WorkspaceService } from '../../core/workspace.service';
+import { HostKeyService } from '../../shared/host-key-dialog.component';
 import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import { TargetDialogComponent } from './target-dialog.component';
 import type { DeployTarget } from '../../api/generated';
@@ -37,7 +38,9 @@ import type { DeployTarget } from '../../api/generated';
   template: `
     @if (busy()) { <mat-progress-bar mode="indeterminate" /> }
     <div class="head"><h2>Remote machines</h2></div>
-    @if (error()) { <div class="errors">{{ error() }}</div> }
+    @if (error()) { <div class="errors">{{ error() }}
+      @if (lastTarget(); as t) { @if (hostKeyProblem()) { <div style="margin-top:6px"><button mat-stroked-button (click)="resetHostKey(t)"><mat-icon>key_off</mat-icon> ssh refused the host key of {{ t.ssh_target }}: remove the stored key…</button></div> } }
+    </div> }
 
     <div class="cards">
       <mat-card appearance="outlined">
@@ -91,6 +94,13 @@ export class RemoteComponent implements OnInit {
   busy = signal(false);
   error = signal<string | null>(null);
   rootKey = signal<string | null>(null);
+  /** Target of the last action that can fail on ssh (for the host-key offer under the error). */
+  lastTarget = signal<DeployTarget | null>(null);
+  private hostKeys = inject(HostKeyService);
+  hostKeyProblem(): boolean { return HostKeyService.looksLikeHostKeyProblem(this.error()); }
+  resetHostKey(t: DeployTarget) {
+    this.hostKeys.offer(t.ssh_target, t.port ?? null, this.error()).subscribe(r => { if (r?.learned) { this.error.set(null); this.snack.open(`Stored key of ${r.host} replaced; run the action again.`, 'OK', { duration: 6000 }); } });
+  }
 
   ngOnInit() { this.api.targets().subscribe(t => this.targets.set(t)); }
 
@@ -134,6 +144,7 @@ export class RemoteComponent implements OnInit {
     } }).afterClosed().subscribe(r => {
       if (!r) return;
       this.busy.set(true);
+      this.lastTarget.set(t);
       this.api.pullHardware(t.name, path).subscribe({
         next: res => {
           this.busy.set(false);

@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
 import { Observable, catchError, throwError } from 'rxjs';
-import type {
+import type { HostKeyForgetResult,
   ApiError, AppState, BrowseResult, ConfigOverview, DeployPreflight, DeployRequest, EditOp, Generation,
   JobDetail, JobInfo, LocationInfo, LocationSuggestion, MachineInfo, NewFileRequest, NixFileView, RenameResult,
   OptionDoc, OptionsStatus, PackageSearchResult, Recipe, RenderResult, ConfigChange,
@@ -145,6 +145,8 @@ export class ApiService {
   targets() { return this.wrap(this.http.get<DeployTarget[]>(`${this.base}/remote/targets`)); }
   saveTargets(targets: DeployTarget[]) { return this.wrap(this.http.put<DeployTarget[]>(`${this.base}/remote/targets`, targets)); }
   remoteTest(ssh_target: string, port: number | null = null) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/test`, { ssh_target, port })); }
+  /** Remove a host from ~/.ssh/known_hosts and record its current key (after the user confirmed the warning). */
+  forgetHostKey(ssh_target: string, port: number | null = null) { return this.wrap(this.http.post<HostKeyForgetResult>(`${this.base}/remote/forget-host-key`, { ssh_target, port })); }
   remoteCheck(target: string) { return this.wrap(this.http.post<RemoteCheck>(`${this.base}/remote/check`, { target, password: '-' })); }
   setupKey(target: string, password: string) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/setup-key`, { target, password })); }
   rootKey(password: string, builder_host: string | null) { return this.wrap(this.http.post<JobInfo>(`${this.base}/remote/root-key`, { password, builder_host })); }

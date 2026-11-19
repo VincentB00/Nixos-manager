@@ -6,7 +6,7 @@
 use crate::deploy::run_root_script;
 use crate::jobs::JobHandle;
 use crate::process;
-use crate::types::{ConfigKind, DeployRequest, DeployTarget, LogLine, LogStream, RebuildAction, RemoteCheck};
+use crate::types::{HostKeyForgetResult, ConfigKind, DeployRequest, DeployTarget, LogLine, LogStream, RebuildAction, RemoteCheck};
 use std::path::Path;
 
 fn sh(s: &str) -> String {
@@ -260,6 +260,7 @@ exit $RC
 /// target, with the same root script a local build uses (sync.sh mirror).
 pub async fn run_on_target(job: JobHandle, req: DeployRequest, target: DeployTarget) {
     job.running().await;
+    job.set_remote(&target.ssh_target, target.port).await;
     job.uses_stop_file().await;
     if req.after_local.is_some() && !req.password.is_empty() {
         if let Err(e) = crate::deploy::check_sudo(&req.password).await {
@@ -379,6 +380,7 @@ pub async fn run_on_target(job: JobHandle, req: DeployRequest, target: DeployTar
 
 pub async fn run_remote(job: JobHandle, req: DeployRequest, target: DeployTarget) {
     job.running().await;
+    job.set_remote(&target.ssh_target, target.port).await;
     if req.after_local.is_some() && !req.password.is_empty() {
         if let Err(e) = crate::deploy::check_sudo(&req.password).await {
             job.failed(format!("your sudo password (for the action on this machine afterwards) was refused: {e}")).await;
@@ -611,12 +613,135 @@ pub async fn check(target: &DeployTarget) -> RemoteCheck {
         nixos_version: get("NM_NIXOS=").filter(|h| !h.is_empty()),
         hardware_config: get("NM_HW="),
         message: if ok { None } else { Some(lines.iter().filter(|l| !l.starts_with("NM_")).cloned().collect::<Vec<_>>().join(" ").chars().take(300).collect()) },
+        host_key_problem: !ok && lines.iter().any(|l| host_key_problem(l)),
+    }
+}
+
+/// True when ssh output says the stored host key is missing or changed.
+/// BatchMode refuses unknown keys ("Host key verification failed."); a key
+/// that differs from known_hosts prints the big "REMOTE HOST IDENTIFICATION
+/// HAS CHANGED" warning.
+pub fn host_key_problem(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("host key verification failed")
+        || t.contains("remote host identification has changed")
+        || t.contains("offending") && t.contains("key in")
+        || t.contains("host key for") && t.contains("has changed")
+        || t.contains("no ") && t.contains(" host key is known for")
+}
+
+/// Host part of `user@host` (what ssh-keygen -R takes).
+pub fn host_of(ssh_target: &str) -> String {
+    ssh_target.rsplit('@').next().unwrap_or(ssh_target).trim().to_string()
+}
+
+/// Reset what ssh knows about a host: remove every known_hosts entry for it
+/// (the name, `[name]:port` when the port is not 22, and the addresses the
+/// name resolves to), then record the key the machine presents now with
+/// ssh-keyscan so the retry (BatchMode, no prompts) is accepted. Only the
+/// user's `~/.ssh/known_hosts` is touched; root reuses it through
+/// UserKnownHostsFile for builder jobs. Deliberately never automatic: a
+/// changed key is exactly what an attacker in the middle looks like, so the
+/// caller must warn the user and get an explicit confirmation first.
+pub async fn forget_host_key(ssh_target: &str, port: Option<u16>) -> crate::Result<HostKeyForgetResult> {
+    let host = host_of(ssh_target);
+    if host.is_empty() || !host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':')) {
+        return Err(crate::CoreError::Invalid(format!("'{host}' is not a plain host name or address")));
+    }
+    let kh = home().join(".ssh").join("known_hosts");
+    let mut names = vec![host.clone()];
+    if let Some(p) = port.filter(|p| *p != 22) {
+        names.push(format!("[{host}]:{p}"));
+    }
+    // resolved addresses (best effort)
+    if let Ok(out) = process::run("getent", &["ahosts", &host], None, std::time::Duration::from_secs(5)).await {
+        let mut seen = std::collections::BTreeSet::new();
+        for l in out.stdout.lines() {
+            if let Some(ip) = l.split_whitespace().next() {
+                if ip != host && seen.insert(ip.to_string()) {
+                    names.push(ip.to_string());
+                    if let Some(p) = port.filter(|p| *p != 22) {
+                        names.push(format!("[{ip}]:{p}"));
+                    }
+                }
+            }
+        }
+    }
+    let mut output = String::new();
+    let mut removed = 0u32;
+    if kh.is_file() {
+        for n in &names {
+            let out = process::run("ssh-keygen", &["-R", n, "-f", &kh.to_string_lossy()], None, std::time::Duration::from_secs(10)).await?;
+            let text = format!("{}{}", out.stdout, out.stderr);
+            removed += text.lines().filter(|l| l.contains("found:")).count() as u32;
+            for l in text.lines().filter(|l| l.contains("found:") || l.contains("not found")) {
+                output.push_str(&format!("{n}: {}\n", l.trim()));
+            }
+        }
+        // ssh-keygen leaves a known_hosts.old backup behind; the user asked to forget, so drop it
+        let _ = std::fs::remove_file(home().join(".ssh").join("known_hosts.old"));
+    } else {
+        output.push_str("no known_hosts file yet\n");
+    }
+    // The user confirmed they trust this machine: record the key it presents now.
+    let mut learned = 0u32;
+    let mut fingerprints = Vec::new();
+    let mut scan_args: Vec<String> = vec!["-T".into(), "8".into()];
+    if let Some(p) = port.filter(|p| *p != 22) {
+        scan_args.push("-p".into());
+        scan_args.push(p.to_string());
+    }
+    scan_args.push(host.clone());
+    let args: Vec<&str> = scan_args.iter().map(|s| s.as_str()).collect();
+    match process::run("ssh-keyscan", &args, None, std::time::Duration::from_secs(20)).await {
+        Ok(out) => {
+            let keys: Vec<&str> = out.stdout.lines().filter(|l| !l.starts_with('#') && l.split_whitespace().count() >= 3).collect();
+            if keys.is_empty() {
+                output.push_str(&format!("ssh-keyscan got no key from {host} (is it up and reachable?)\n"));
+            } else {
+                if let Some(dir) = kh.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&kh) {
+                    for k in &keys {
+                        let _ = writeln!(f, "{k}");
+                    }
+                    learned = keys.len() as u32;
+                }
+                let tmp = std::env::temp_dir().join(format!("nixos-manager-keyscan-{}", uuid::Uuid::new_v4()));
+                if std::fs::write(&tmp, keys.join("\n") + "\n").is_ok() {
+                    if let Ok(fp) = process::run("ssh-keygen", &["-lf", &tmp.to_string_lossy()], None, std::time::Duration::from_secs(5)).await {
+                        fingerprints = fp.stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                    }
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                output.push_str(&format!("recorded {learned} key(s) of {host}\n"));
+            }
+        }
+        Err(e) => output.push_str(&format!("ssh-keyscan failed: {e}\n")),
+    }
+    Ok(HostKeyForgetResult { host, port, known_hosts: kh.to_string_lossy().to_string(), removed, learned, fingerprints, output })
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    #[test]
+    fn detects_host_key_refusals() {
+        assert!(super::host_key_problem("Host key verification failed."));
+        assert!(super::host_key_problem("@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @"));
+        assert!(super::host_key_problem("Offending ECDSA key in /home/v/.ssh/known_hosts:12"));
+        assert!(!super::host_key_problem("Permission denied (publickey,password)."));
+        assert!(!super::host_key_problem("ssh: connect to host 10.0.0.5 port 22: Connection refused"));
+        assert_eq!(super::host_of("vincent@lg-laptop"), "lg-laptop");
+        assert_eq!(super::host_of("10.0.0.5"), "10.0.0.5");
     }
 }
 
 /// `ssh target 'nixos-version'` with BatchMode, as the user.
 pub async fn test_connection(job: JobHandle, ssh_target: String, port: Option<u16>) {
     job.running().await;
+    job.set_remote(&ssh_target, port).await;
     let script = format!(
         "{port}set -o pipefail\necho \"[nixos-manager] ssh {t} ...\"\nssh ${{NM_SSH_OPTS:-}} -o BatchMode=yes -o ConnectTimeout=15 {t} 'echo connected as $(id -un) on $(uname -n); nixos-version; nix --version; sudo -n true 2>/dev/null && echo \"passwordless sudo: yes\" || echo \"passwordless sudo: no (use root@ or configure NOPASSWD)\"; TU=$(nix config show trusted-users 2>/dev/null || nix show-config 2>/dev/null | sed -n \"s/^trusted-users = //p\"); ME=$(id -un); TR=$(nix store info 2>&1 | sed -n \"s/^Trusted: //p\"); if [ \"$ME\" = root ]; then echo \"trusted by nix: yes (root)\"; elif [ \"$TR\" = 1 ]; then echo \"trusted by nix: yes (daemon answer)\"; elif [ \"$TR\" = 0 ]; then echo \"trusted by nix: NO - deployments need the temporary trust step (the build dialog asks for your sudo password on this target). Permanent fix: nix.settings.trusted-users = [ \\\"$ME\\\" ] on this target.\"; elif echo \" $TU \" | grep -q \" $ME \"; then echo \"trusted by nix: yes\"; elif echo \" $TU \" | grep -q \" @wheel \" && id -nG | grep -qw wheel; then echo \"trusted by nix: yes (via @wheel)\"; else echo \"trusted by nix: NO - deployments will be refused (cannot add path ... lacks a signature). Add nix.settings.trusted-users = [ \\\"$ME\\\" ] on this target.\"; fi; if sudo -n grep -q \"^# nixos-manager temporary trust\" /root/.config/nix/nix.conf 2>/dev/null; then echo \"note: a leftover temporary trust entry from an interrupted deployment is still in /root/.config/nix/nix.conf; the next deployment with temporary trust enabled removes it\"; fi'\n",
         port = port_prelude(port),
@@ -983,6 +1108,7 @@ fi
 /// Install this app's SSH key on a deploy target using a one-time password.
 pub async fn setup_key_access(job: JobHandle, target: DeployTarget, password: String) {
     job.running().await;
+    job.set_remote(&target.ssh_target, target.port).await;
     let key_path = home().join(".ssh").join(APP_KEY_NAME).to_string_lossy().to_string();
     let script = format!("{}{}", port_prelude(target.port), key_access_script(&target.ssh_target, &key_path, &target.name));
     let sender = job.line_sender();

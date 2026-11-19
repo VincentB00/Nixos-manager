@@ -385,3 +385,51 @@ N days, or all old generations (`-d`). Same on targets.
   parse_system_name) and `POST /api/system/remote/delete-paths {target,
   paths, password, gc_after}` deletes through `run_remote_root`. The System
   page card follows the Machine selector.
+
+
+## Host key refused: "remove the stored key and retry" (2026-11-18, Vincent's request)
+Edge case: ssh says `Host key verification failed` / `REMOTE HOST IDENTIFICATION
+HAS CHANGED` (target reinstalled, keys regenerated, or first contact with
+BatchMode). Flow everywhere a connection is attempted:
+- Core `remote::host_key_problem(text)` (pattern match, unit-tested) and
+  `remote::host_of(ssh_target)`. `RemoteCheck.host_key_problem: bool`.
+  Jobs: remote functions call `job.set_remote(ssh_target, port)` (test
+  connection, key setup, run_remote/run_on_target, remote rollback/gc/
+  delete-paths, deploy with build_host); `JobManager::set_status` scans the
+  log of a *failed* job with a remote and sets `JobInfo.host_key_failure
+  { ssh_target, port, host }` + prefixes the error.
+- `remote::forget_host_key(ssh_target, port)` = `ssh-keygen -R` for the host,
+  `[host]:port` (port ≠ 22) and every address `getent ahosts` resolves, in the
+  user's `~/.ssh/known_hosts` (drops the `.old` backup), **then `ssh-keyscan`
+  records the key the machine presents now** and returns `HostKeyForgetResult
+  { removed, learned, fingerprints (ssh-keygen -lf), output }`. Recording is
+  needed because every app ssh call uses BatchMode (no prompt, so a merely
+  removed key would be refused again). Never automatic: the UI must warn
+  first. `POST /api/remote/forget-host-key {ssh_target, port}`.
+- Web: `shared/host-key-dialog.component.ts` — `HostKeyDialogComponent`
+  (explains harmless vs. man-in-the-middle, red box "only if you are
+  absolutely sure", required checkbox, warn-colored button, then shows the
+  new fingerprints and a "Retry now" button) and `HostKeyService.offer(...)`
+  + `looksLikeHostKeyProblem(msg)`. Offered from: the job log page banner
+  (`JobInfo.host_key_failure`; retries `remote-test` jobs itself, otherwise
+  says "run the action again"), the build dialog next to "Could not reach the
+  target/builder" (re-runs the check), the System page error (reloads), the
+  Remote page error after pull-hardware.
+- TUI: Targets screen shows "ssh refused the host key … press F"; `F` opens
+  the shared Prompt with the same warning (also on the remote System screen),
+  `PromptAction::ResetHostKey` → `Msg::HostKeyReset` → status line with
+  removed/recorded counts + fingerprints, then the check runs again.
+- Verified with a fake `ssh`/`ssh-keyscan` in PATH and `HOME` pointed at a
+  scratch dir with a stale known_hosts (`<scratch>/hk/`): test-connection job
+  flagged → dialog → reset (removed 1, recorded 1) → retry succeeded; same
+  from the build dialog and in the TUI. Script: `.claude/tests/scripts/t_hostkey.py`.
+- Fix 2026-11-18 (same day, Vincent's report "the popup doesn't show up"): the job
+  itself was flagged, but an already open job page only receives WebSocket
+  events, and `JobEvent::Status` carried just status + the *original* error.
+  Now the event carries `host_key_failure` and the final error text,
+  `jobs.service.ts` applies it, and `push_log` flags a refusal line that
+  arrives after the failure status (lines travel through a channel) and
+  re-emits the status. The first test missed it because the fake ssh failed
+  before the page loaded; the fixture now sleeps 2 s and prints only
+  "Host key verification failed." like a real first contact. TUI job screen:
+  yellow hint in the bottom border + `F`.

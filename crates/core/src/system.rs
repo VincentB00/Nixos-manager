@@ -139,6 +139,7 @@ async fn run_remote_root(job: &JobHandle, target: &crate::types::DeployTarget, p
 
 pub async fn remote_rollback(job: JobHandle, target: crate::types::DeployTarget, number: u32, password: String) {
     job.running().await;
+    job.set_remote(&target.ssh_target, target.port).await;
     job.system(format!("Rolling {} back to generation {number} over SSH...", target.ssh_target)).await;
     let script = format!(
         "set -euo pipefail\nP=/nix/var/nix/profiles/system\nif [ ! -e \"$P-{n}-link\" ]; then echo \"generation {n} does not exist on $(uname -n)\" >&2; exit 2; fi\necho \"[nixos-manager] $(uname -n): switching the system profile to generation {n}...\"\nnix-env -p \"$P\" --switch-generation {n} 2>&1\necho \"[nixos-manager] activating it (switch-to-configuration switch)...\"\n\"$P/bin/switch-to-configuration\" switch 2>&1\necho \"[nixos-manager] generation {n} is active on $(uname -n) and will be used at its next boot.\"\n",
@@ -154,6 +155,7 @@ pub async fn remote_rollback(job: JobHandle, target: crate::types::DeployTarget,
 
 pub async fn remote_gc(job: JobHandle, target: crate::types::DeployTarget, older_than_days: u32, password: String, keep_generations: bool) {
     job.running().await;
+    job.set_remote(&target.ssh_target, target.port).await;
     let flag = gc_flag(older_than_days, keep_generations);
     job.system(format!("Collecting garbage on {} over SSH ({flag})...", target.ssh_target)).await;
     let script = format!(
@@ -347,6 +349,7 @@ pub async fn remote_other_systems(target: &crate::types::DeployTarget) -> Result
 
 pub async fn remote_delete_paths(job: JobHandle, target: crate::types::DeployTarget, paths: Vec<String>, password: String, gc_after: bool) {
     job.running().await;
+    job.set_remote(&target.ssh_target, target.port).await;
     for p in &paths {
         if !p.starts_with("/nix/store/") || p.contains("..") || p.contains(' ') || p.contains('\'') {
             job.failed(format!("refusing to delete {p}: not a store path")).await;

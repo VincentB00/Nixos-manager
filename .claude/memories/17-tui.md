@@ -43,7 +43,9 @@ Screens / keys (remote support completed 2026-10-22):
   (`remote::fetch_target_hardware` → `hardware::install_pulled` →
   `store.set_hardware_pull`; needs an open workspace; status line reports
   it), `s` remote System screen, `K` `remote::root_builder_key` with the
-  target's host (root key for using it as a builder).
+  target's host (root key for using it as a builder), `F` reset the stored
+  ssh host key after a warning popup (see 14-remote.md "Host key refused";
+  also on the remote System screen).
 - System (`g` local, or `s` on a target): header (machine, `store_usage` /
   `remote_info` disk + generation count, access rule for targets),
   generations list (Enter → rollback; `c` GC keep generations, `o` older

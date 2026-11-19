@@ -12,6 +12,9 @@ struct JobRecord {
     log: Vec<LogLine>,
     cancel: Arc<Cancel>,
     file: Option<std::fs::File>,
+    /// ssh destination this job talks to (set by remote jobs), so a failure
+    /// caused by host-key verification can be flagged with the right host.
+    remote: Option<(String, Option<u16>)>,
 }
 
 /// Directory where every job log is also written as a text file
@@ -127,10 +130,11 @@ impl JobManager {
             error: None,
             log_lines: 0,
             log_file: file.as_ref().map(|(_, p)| p.to_string_lossy().to_string()),
+            host_key_failure: None,
         };
         {
             let mut inner = self.inner.write().await;
-            inner.jobs.insert(id.clone(), JobRecord { info: info.clone(), log: Vec::new(), cancel: Arc::new(Cancel::new(&id)), file: file.map(|(f, _)| f) });
+            inner.jobs.insert(id.clone(), JobRecord { info: info.clone(), log: Vec::new(), cancel: Arc::new(Cancel::new(&id)), file: file.map(|(f, _)| f), remote: None });
             inner.order.push(id.clone());
             while inner.order.len() > MAX_JOBS {
                 let old = inner.order.remove(0);
@@ -307,11 +311,20 @@ impl JobManager {
     }
 
     async fn push_log(&self, id: &str, line: LogLine) {
+        let mut late_status = None;
         {
             let mut inner = self.inner.write().await;
             if let Some(j) = inner.jobs.get_mut(id) {
                 j.log.push(line.clone());
                 j.info.log_lines = j.log.len() as u32;
+                if j.info.status == JobStatus::Failed && j.info.host_key_failure.is_none() && crate::remote::host_key_problem(&line.text) {
+                    if let Some((ssh_target, port)) = &j.remote {
+                        let host = crate::remote::host_of(ssh_target);
+                        j.info.host_key_failure = Some(crate::types::HostKeyFailure { ssh_target: ssh_target.clone(), port: *port, host: host.clone() });
+                        j.info.error = Some(format!("ssh refused the host key of {host} (missing or changed). {}", j.info.error.clone().unwrap_or_default()));
+                        late_status = Some((j.info.status, j.info.error.clone(), j.info.host_key_failure.clone()));
+                    }
+                }
                 if let Some(f) = j.file.as_mut() {
                     use std::io::Write;
                     let prefix = match line.stream { LogStream::System => "[app] ", LogStream::Stderr => "", LogStream::Stdout => "" };
@@ -320,11 +333,15 @@ impl JobManager {
             }
         }
         let _ = self.tx.send(JobEvent::Log { job_id: id.to_string(), line });
+        if let Some((status, error, host_key_failure)) = late_status {
+            let _ = self.tx.send(JobEvent::Status { job_id: id.to_string(), status, error, host_key_failure });
+        }
     }
 
     async fn set_status(&self, id: &str, status: JobStatus, error: Option<String>) {
         let mut status = status;
         let mut error = error;
+        let mut host_key_failure = None;
         {
             let mut inner = self.inner.write().await;
             if let Some(j) = inner.jobs.get_mut(id) {
@@ -334,6 +351,18 @@ impl JobManager {
                 }
                 j.info.status = status;
                 j.info.error = error.clone();
+                if status == JobStatus::Failed {
+                    if let Some((ssh_target, port)) = &j.remote {
+                        let refused = j.log.iter().any(|l| crate::remote::host_key_problem(&l.text)) || error.as_deref().map(crate::remote::host_key_problem).unwrap_or(false);
+                        if refused {
+                            j.info.host_key_failure = Some(crate::types::HostKeyFailure { ssh_target: ssh_target.clone(), port: *port, host: crate::remote::host_of(ssh_target) });
+                            j.info.error = Some(format!("ssh refused the host key of {} (missing or changed). {}", crate::remote::host_of(ssh_target), error.clone().unwrap_or_default()));
+                        }
+                    }
+                }
+                // the event must carry what the stored info says, or an open job page never sees it
+                error = j.info.error.clone();
+                host_key_failure = j.info.host_key_failure.clone();
                 if matches!(status, JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled) {
                     j.info.finished_at = Some(chrono::Utc::now().to_rfc3339());
                     let _ = std::fs::remove_file(&j.cancel.stop_file);
@@ -346,7 +375,7 @@ impl JobManager {
                 }
             }
         }
-        let _ = self.tx.send(JobEvent::Status { job_id: id.to_string(), status, error });
+        let _ = self.tx.send(JobEvent::Status { job_id: id.to_string(), status, error, host_key_failure });
     }
 }
 
@@ -371,6 +400,13 @@ impl JobHandle {
     }
     pub async fn failed(&self, error: impl Into<String>) {
         self.mgr.set_status(&self.id, JobStatus::Failed, Some(error.into())).await;
+    }
+    /// Declare the ssh destination this job talks to (see JobInfo::host_key_failure).
+    pub async fn set_remote(&self, ssh_target: &str, port: Option<u16>) {
+        let mut inner = self.mgr.inner.write().await;
+        if let Some(j) = inner.jobs.get_mut(&self.id) {
+            j.remote = Some((ssh_target.to_string(), port));
+        }
     }
     /// Path the deploy scripts poll to learn about a stop request.
     pub async fn stop_file(&self) -> std::path::PathBuf {

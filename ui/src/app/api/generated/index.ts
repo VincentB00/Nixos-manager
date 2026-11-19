@@ -56,6 +56,8 @@ export type { HardwarePull } from './HardwarePull';
 export type { HardwareStatus } from './HardwareStatus';
 export type { HardwareSyncStatus } from './HardwareSyncStatus';
 export type { HardwareSync } from './HardwareSync';
+export type { HostKeyFailure } from './HostKeyFailure';
+export type { HostKeyForgetResult } from './HostKeyForgetResult';
 export type { ImportEdge } from './ImportEdge';
 export type { ImportRef } from './ImportRef';
 export type { ImportVia } from './ImportVia';

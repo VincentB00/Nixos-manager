@@ -468,6 +468,9 @@ pub struct JobInfo {
     /// Where the log is also written on disk (survives a reboot / daemon restart).
     #[serde(default)]
     pub log_file: Option<String>,
+    /// Set when the job failed because ssh refused the target's host key.
+    #[serde(default)]
+    pub host_key_failure: Option<HostKeyFailure>,
 }
 
 /// A job log kept on disk (see JobManager::history).
@@ -503,7 +506,14 @@ pub struct JobDetail {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum JobEvent {
     Log { job_id: String, line: LogLine },
-    Status { job_id: String, status: JobStatus, error: Option<String> },
+    Status {
+        job_id: String,
+        status: JobStatus,
+        error: Option<String>,
+        /// Mirrors JobInfo::host_key_failure so an open job page learns about it live.
+        #[serde(default)]
+        host_key_failure: Option<HostKeyFailure>,
+    },
     Created { job: JobInfo },
 }
 
@@ -1158,6 +1168,37 @@ pub struct RemoteCheck {
     /// or "none" (deployment impossible).
     pub hardware_config: Option<String>,
     pub message: Option<String>,
+    /// ssh refused because the stored host key is missing or changed
+    /// ("Host key verification failed" / "REMOTE HOST IDENTIFICATION HAS CHANGED").
+    #[serde(default)]
+    pub host_key_problem: bool,
+}
+
+/// A failed job whose ssh step was refused by host-key verification. The UI
+/// offers to remove the stored key (after a strong warning) and retry.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostKeyFailure {
+    pub ssh_target: String,
+    pub port: Option<u16>,
+    /// Host part only (what `ssh-keygen -R` removes).
+    pub host: String,
+}
+
+/// Outcome of removing a host from the user's known_hosts.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostKeyForgetResult {
+    pub host: String,
+    pub port: Option<u16>,
+    pub known_hosts: String,
+    /// Entries removed (host name, [host]:port and resolved addresses).
+    pub removed: u32,
+    /// Keys recorded again from the machine's current answer (ssh-keyscan).
+    pub learned: u32,
+    /// Fingerprints of the recorded keys, to compare with the machine's console.
+    pub fingerprints: Vec<String>,
+    pub output: String,
 }
 
 // ───────────────────────── git ─────────────────────────

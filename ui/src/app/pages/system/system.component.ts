@@ -9,6 +9,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { TooltipAriaDirective } from '../../shared/tooltip-aria.directive';
 import { ApiService, ApiFailure } from '../../api/api.service';
 import { WorkspaceService } from '../../core/workspace.service';
+import { HostKeyService } from '../../shared/host-key-dialog.component';
 import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import type { DeployTarget, Generation, OtherSystem, RemoteCheck, StoreUsage } from '../../api/generated';
 import { FormsModule } from '@angular/forms';
@@ -61,7 +62,9 @@ import { MatSelectModule } from '@angular/material/select';
       </div>
     }
     @if (busy()) { <mat-progress-bar mode="indeterminate" style="margin-bottom:8px" /> }
-    @if (error()) { <div class="errors">{{ error() }}</div> }
+    @if (error()) { <div class="errors">{{ error() }}
+      @if (target(); as t) { @if (hostKeyProblem()) { <div style="margin-top:6px"><button mat-stroked-button (click)="resetHostKey(t)"><mat-icon>key_off</mat-icon> ssh refused the host key of {{ t.ssh_target }}: remove the stored key and retry…</button></div> } }
+    </div> }
     <div class="cards">
       <mat-card appearance="outlined">
         <mat-card-header><mat-card-title>Generations</mat-card-title><mat-card-subtitle>{{ gens().length }} on {{ target() ? (remoteHost() ?? target()!.name) : 'this machine' }} · the current one is highlighted</mat-card-subtitle></mat-card-header>
@@ -130,6 +133,11 @@ export class SystemComponent implements OnInit {
   private dialog = inject(MatDialog);
   private router = inject(Router);
   ws = inject(WorkspaceService);
+  private hostKeys = inject(HostKeyService);
+  hostKeyProblem(): boolean { return HostKeyService.looksLikeHostKeyProblem(this.error()) || this.check()?.host_key_problem === true; }
+  resetHostKey(t: DeployTarget) {
+    this.hostKeys.offer(t.ssh_target, t.port ?? null, this.error()).subscribe(r => { if (r?.learned) this.selectMachine(t.name); });
+  }
   gens = signal<Generation[]>([]);
   store = signal<StoreUsage | null>(null);
   busy = signal(false);

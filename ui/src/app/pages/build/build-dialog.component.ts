@@ -12,6 +12,7 @@ import { MatRadioModule } from '@angular/material/radio';
 import { MatSelectModule } from '@angular/material/select';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { ApiService, ApiFailure } from '../../api/api.service';
+import { HostKeyService } from '../../shared/host-key-dialog.component';
 import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepConfiguration, RebuildAction, RemoteCheck } from '../../api/generated';
 
 @Component({
@@ -84,6 +85,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
                 @else if (bcheck(); as c) {
                   @if (!c.reachable) {
                     <div class="warning-box" style="margin-top:6px"><mat-icon>warning</mat-icon><span>Could not reach the builder over SSH{{ c.message ? ': ' + c.message : '' }}. Use "Set up key access" or "Test connection" on the Remote page.</span></div>
+                    @if (c.host_key_problem) { <div style="margin-top:6px"><button mat-stroked-button (click)="resetHostKey(b.ssh_target, b.port ?? null, c.message, 'builder')"><mat-icon>key_off</mat-icon> ssh refused the host key: remove the stored key…</button></div> }
                   } @else {
                     <div style="margin-top:6px">Builder: <b>{{ c.hostname ?? b.ssh_target }}</b>{{ c.nixos_version ? ' · NixOS ' + c.nixos_version : '' }} · trusted by nix: <b>{{ c.is_root ? 'yes (root)' : c.trusted === true ? 'yes' : c.trusted === false ? 'no' : 'unknown' }}</b></div>
                     @if (builderNeedsPassword()) {
@@ -112,6 +114,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
                 @else if (check(); as c) {
                   @if (!c.reachable) {
                     <div class="warning-box" style="margin-top:6px"><mat-icon>warning</mat-icon><span>Could not reach the target over SSH{{ c.message ? ': ' + c.message : '' }}. Use "Set up key access" or "Test connection" on the Remote page.</span></div>
+                  @if (c.host_key_problem) { <div style="margin-top:6px"><button mat-stroked-button (click)="resetHostKey(t.ssh_target, t.port ?? null, c.message, 'target')"><mat-icon>key_off</mat-icon> ssh refused the host key: remove the stored key…</button></div> }
                   } @else {
                     <div style="margin-top:6px">Target: <b>{{ c.hostname ?? t.ssh_target }}</b>{{ c.nixos_version ? ' · NixOS ' + c.nixos_version : '' }} · passwordless sudo: <b>{{ c.is_root ? 'n/a (root)' : c.passwordless_sudo === true ? 'yes' : c.passwordless_sudo === false ? 'no' : 'unknown' }}</b></div>
                     @if (onTargetNeedsPassword()) {
@@ -148,6 +151,7 @@ import type { AfterBuild, DeployPreflight, DeployTarget, HardwareChoice, KeepCon
               @else if (check(); as c) {
                 @if (!c.reachable) {
                   <div class="warning-box" style="margin-top:6px"><mat-icon>warning</mat-icon><span>Could not reach the target over SSH{{ c.message ? ': ' + c.message : '' }}. Use "Set up key access" or "Test connection" on the Remote page.</span></div>
+                  @if (c.host_key_problem) { <div style="margin-top:6px"><button mat-stroked-button (click)="resetHostKey(t.ssh_target, t.port ?? null, c.message, 'target')"><mat-icon>key_off</mat-icon> ssh refused the host key: remove the stored key…</button></div> }
                 } @else {
                   <div style="margin-top:6px">Target: <b>{{ c.hostname ?? t.ssh_target }}</b>{{ c.nixos_version ? ' · NixOS ' + c.nixos_version : '' }} · trusted by nix: <b>{{ c.is_root ? 'yes (root)' : c.trusted === true ? 'yes' : c.trusted === false ? 'no' : 'unknown' }}</b> · passwordless sudo: <b>{{ c.is_root ? 'n/a' : c.passwordless_sudo === true ? 'yes' : c.passwordless_sudo === false ? 'no' : 'unknown' }}</b></div>
                   @if (c.hardware_config === 'none' && !useWorkspaceHardware) {
@@ -390,6 +394,14 @@ export class BuildDialogComponent implements OnInit {
   buildHost(): DeployTarget | null { return this.target() ? null : (this.pre()?.targets.find(t => t.name === this.buildHostName) ?? null); }
   /** Builders only need sudo for the temporary nix trust; a trusted user needs nothing. */
   builderNeedsPassword(): boolean { const c = this.bcheck(); return !!c && c.reachable && !c.is_root && c.trusted !== true; }
+  private hostKeys = inject(HostKeyService);
+  /** Warn, reset the stored key of the target or builder, then run the check again. */
+  resetHostKey(ssh_target: string, port: number | null, detail: string | null | undefined, which: 'target' | 'builder') {
+    this.hostKeys.offer(ssh_target, port, detail ?? null).subscribe(r => {
+      if (!r || !r.learned) return;
+      if (which === 'target') this.selectTarget(this.targetName); else this.selectBuildHost(this.buildHostName);
+    });
+  }
   selectBuildHost(name: string) {
     this.buildHostName = name;
     this.bcheck.set(null);

@@ -88,7 +88,7 @@ export class JobsService {
         }
         case 'status': {
           const j = next.get(event.job_id);
-          if (j) next.set(event.job_id, { ...j, info: { ...j.info, status: event.status, error: event.error } });
+          if (j) next.set(event.job_id, { ...j, info: { ...j.info, status: event.status, error: event.error, host_key_failure: event.host_key_failure ?? j.info.host_key_failure ?? null } });
           break;
         }
       }

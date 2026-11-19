@@ -132,6 +132,7 @@ pub fn router(ctx: AppCtx, cors_origin: Option<&str>) -> Router {
         .route("/validate", post(validate_start))
         .route("/remote/targets", get(targets_get).put(targets_put))
         .route("/remote/test", post(remote_test))
+        .route("/remote/forget-host-key", post(remote_forget_host_key))
         .route("/remote/check", post(remote_check))
         .route("/remote/root-key", post(remote_root_key))
         .route("/remote/setup-key", post(remote_setup_key))
@@ -680,6 +681,12 @@ async fn remote_test(State(ctx): State<AppCtx>, Json(req): Json<RemoteTestReques
     tokio::spawn(remote::test_connection(job, req.ssh_target, req.port));
     let info = ctx.jobs.get(&id).await.map(|d| d.info).ok_or_else(|| CoreError::Other("job vanished".into()))?;
     Ok(Json(info))
+}
+
+/// Remove a host from ~/.ssh/known_hosts after the user confirmed the warning
+/// in the UI (a changed key can mean a reinstalled machine or an attacker).
+async fn remote_forget_host_key(Json(req): Json<RemoteTestRequest>) -> ApiResult<HostKeyForgetResult> {
+    Ok(Json(remote::forget_host_key(&req.ssh_target, req.port).await?))
 }
 
 async fn remote_setup_key(State(ctx): State<AppCtx>, Json(req): Json<KeyAccessRequest>) -> ApiResult<JobInfo> {

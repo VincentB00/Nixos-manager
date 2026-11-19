@@ -21,4 +21,9 @@ needs_sudo_password: boolean, hostname: string | null, nixos_version: string | n
  * "etc" (/etc/nixos), "generate" (nixos-generate-config on the target),
  * or "none" (deployment impossible).
  */
-hardware_config: string | null, message: string | null, };
+hardware_config: string | null, message: string | null, 
+/**
+ * ssh refused because the stored host key is missing or changed
+ * ("Host key verification failed" / "REMOTE HOST IDENTIFICATION HAS CHANGED").
+ */
+host_key_problem: boolean, };

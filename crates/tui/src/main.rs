@@ -42,6 +42,8 @@ enum Msg {
     Suggestions(Vec<LocationSuggestion>),
     Opened(Result<(PathBuf, ConfigOverview, Option<BuildStatus>, HardwareStatus), String>),
     Check(String, RemoteCheck),
+    /// Outcome of a host-key reset for a target (name, result).
+    HostKeyReset(String, Result<nixos_manager_core::types::HostKeyForgetResult, String>),
     SystemInfo(Result<SysInfo, String>),
     OtherSystems(Option<String>, Result<Vec<OtherSystem>, String>),
     Job(JobEvent),
@@ -250,6 +252,8 @@ enum PromptAction {
     RootKey(Option<String>),
     FreeMemory,
     DeleteTarget(String),
+    /// Remove the stored ssh host key of a target and record its current one.
+    ResetHostKey(DeployTarget),
 }
 
 struct Prompt {
@@ -596,11 +600,40 @@ impl App {
                 self.run_job("root-key", "Root SSH key for remote builders".into(), move |job| remote::root_builder_key(job, pw, host));
             }
             PromptAction::FreeMemory => self.run_free_memory(pw),
+            PromptAction::ResetHostKey(t) => {
+                let tx = self.tx.clone();
+                self.status = Some(format!("Resetting the stored host key of {}…", t.ssh_target));
+                tokio::spawn(async move {
+                    let r = remote::forget_host_key(&t.ssh_target, t.port).await.map_err(|e| e.to_string());
+                    let _ = tx.send(Msg::HostKeyReset(t.name.clone(), r));
+                });
+            }
             PromptAction::DeleteTarget(name) => {
                 let next: Vec<DeployTarget> = self.targets.iter().filter(|t| t.name != name).cloned().collect();
                 self.save_targets(next, format!("Removed target {name}."));
             }
         }
+    }
+
+    /// The warning popup before a host key is replaced (a changed key can mean an attack).
+    fn offer_host_key_reset(&mut self, t: DeployTarget, detail: Option<String>) {
+        let host = remote::host_of(&t.ssh_target);
+        let mut lines = vec![
+            format!("ssh does not trust {host}: the key it presents is not the stored one"),
+            "(or none is stored yet). Harmless if the machine was reinstalled or this".into(),
+            "is the first contact. Serious if something between you and the machine".into(),
+            "is intercepting the connection and presenting its own key.".into(),
+            String::new(),
+            "Enter removes the stored key and trusts the key the machine presents".into(),
+            "RIGHT NOW. Only continue if you are absolutely sure it is the right".into(),
+            "machine: reinstalled by you, or its fingerprint checked on its console".into(),
+            "(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub).".into(),
+        ];
+        // the ssh banner itself adds nothing once the title says what happened
+        if let Some(d) = detail.filter(|d| !d.is_empty() && !remote::host_key_problem(d)) {
+            lines.push(format!("ssh said: {}", d.chars().take(160).collect::<String>()));
+        }
+        self.prompt = Some(Prompt { title: format!("Host key of {host}"), lines, action: PromptAction::ResetHostKey(t), password: String::new(), ask_password: false, require_password: false });
     }
 
     /// Vincent's clear-sessions.sh: kill every other login session and drop caches.
@@ -986,6 +1019,12 @@ fn key_system(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('o') => app.ask_system("Collect garbage", vec![format!("nix-collect-garbage --delete-older-than 30d on {machine}: removes generations older than 30 days, then frees their packages.")], PromptAction::Gc { days: 30, keep: false }),
         KeyCode::Char('D') => app.ask_system("Collect garbage", vec![format!("nix-collect-garbage -d on {machine}: deletes every generation but the current one, then frees their packages. You cannot roll back afterwards.")], PromptAction::Gc { days: 0, keep: false }),
         KeyCode::Char('r') => app.load_system(),
+        KeyCode::Char('F') => {
+            if let Some(t) = app.sys.machine.clone() {
+                let detail = app.sys.error.clone().or_else(|| app.checks.get(&t.name).and_then(|c| c.message.clone()));
+                app.offer_host_key_reset(t, detail);
+            }
+        }
         _ => {}
     }
     true
@@ -1064,6 +1103,12 @@ fn key_targets(app: &mut App, key: KeyEvent) -> bool {
                 app.open_system(Some(t));
             }
         }
+        KeyCode::Char('F') => {
+            if let Some(t) = app.selected_target() {
+                let detail = app.checks.get(&t.name).and_then(|c| c.message.clone());
+                app.offer_host_key_reset(t, detail);
+            }
+        }
         KeyCode::Char('K') => {
             let host = app.selected_target().map(|t| t.ssh_target.split('@').next_back().unwrap_or("").to_string()).filter(|h| !h.is_empty());
             let mut lines = vec!["Makes sure root on this machine has an SSH key (the nix daemon connects to builders as root) and prints its public key.".to_string()];
@@ -1130,6 +1175,12 @@ fn key_job(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::PageDown => app.job_scroll += 20,
         KeyCode::End | KeyCode::Char('f') => app.job_follow = true,
         KeyCode::Char('j') => app.screen = Screen::Jobs,
+        KeyCode::Char('F') => {
+            if let Some(hk) = app.job.as_ref().and_then(|d| d.info.host_key_failure.clone()) {
+                let t = app.targets.iter().find(|t| t.ssh_target == hk.ssh_target && t.port == hk.port).cloned().unwrap_or(DeployTarget { name: hk.ssh_target.clone(), ssh_target: hk.ssh_target.clone(), flake_host: None, build_host: None, use_remote_sudo: false, port: hk.port });
+                app.offer_host_key_reset(t, None);
+            }
+        }
         _ => {}
     }
     true
@@ -1183,7 +1234,7 @@ fn draw(f: &mut Frame, app: &mut App, titles: &Titles) {
             Screen::Workspace => " b build · v validate · g system · t targets · j jobs · m free memory · h next host · r rescan · q back ",
             Screen::Build => " ↑↓ field · ←→/Space change · type passwords · Enter on Start · Esc back ",
             Screen::System => " ↑↓ choose · Tab switch list · Enter roll back / delete · c collect garbage · o older than 30d · D all old · r reload · Esc back ",
-            Screen::Targets => " a add · e edit · d remove · c check · t test ssh · k key access · p pull hardware · s system · K root key · Esc back ",
+            Screen::Targets => " a add · e edit · d remove · c check · t test ssh · k key access · p pull hardware · s system · K root key · F reset host key · Esc back ",
             Screen::TargetEdit => " ↑↓/Tab field · type · Space toggle · Enter on Save · Esc cancel ",
             Screen::Job => " s stop · ↑↓ PgUp PgDn scroll · f follow · j jobs · Esc back ",
             Screen::Jobs => " ↑↓ choose · Enter open · Esc back ",
@@ -1344,6 +1395,9 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         } else if let Some(c) = app.checks.get(&t.name) {
             if !c.reachable {
                 lines.push(Line::from(Span::styled(format!("Cannot reach {}: {}", t.ssh_target, c.message.clone().unwrap_or_default()), Style::default().fg(Color::Red))));
+                if c.host_key_problem {
+                    lines.push(Line::from(Span::styled("ssh refused the host key: on the Targets screen (t), select it and press F to reset the stored key.", Style::default().fg(Color::Yellow))));
+                }
             } else {
                 lines.push(Line::raw(format!(
                     "{} {} · NixOS {} · trusted by nix: {} · passwordless sudo: {}",
@@ -1410,7 +1464,11 @@ fn draw_system(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(head).block(block("System")), rows[0]);
 
     let gens: Vec<ListItem> = if let Some(e) = &app.sys.error {
-        vec![ListItem::new(Line::from(Span::styled(e.clone(), Style::default().fg(Color::Red))))]
+        let mut v = vec![ListItem::new(Line::from(Span::styled(e.clone(), Style::default().fg(Color::Red))))];
+        if app.sys.machine.is_some() && remote::host_key_problem(e) {
+            v.push(ListItem::new(Line::from(Span::styled("ssh refused the host key (missing or changed). Press F to remove the stored key and trust the current one — only if you are sure it is the right machine.", Style::default().fg(Color::Yellow)))));
+        }
+        v
     } else if app.sys.loading {
         vec![ListItem::new("Loading generations…")]
     } else {
@@ -1484,8 +1542,13 @@ fn draw_targets(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(Span::styled("Checking…", Style::default().fg(Color::Yellow))));
         } else if let Some(c) = app.checks.get(&t.name) {
             if !c.reachable {
-                lines.push(Line::from(Span::styled(format!("Unreachable: {}", c.message.clone().unwrap_or_default()), Style::default().fg(Color::Red))));
-                lines.push(Line::from(Span::styled("Press t to run ssh verbosely, or k to install this app's key with the target's password.", dim)));
+                let why = if c.host_key_problem { "ssh refused the host key (REMOTE HOST IDENTIFICATION HAS CHANGED / Host key verification failed)".to_string() } else { c.message.clone().unwrap_or_default() };
+                lines.push(Line::from(Span::styled(format!("Unreachable: {why}"), Style::default().fg(Color::Red))));
+                if c.host_key_problem {
+                    lines.push(Line::from(Span::styled("ssh refused the host key (missing or changed). Press F to remove the stored key and trust the current one — only if you are sure it is the right machine.", Style::default().fg(Color::Yellow))));
+                } else {
+                    lines.push(Line::from(Span::styled("Press t to run ssh verbosely, or k to install this app's key with the target's password.", dim)));
+                }
             } else {
                 lines.push(Line::from(Span::styled("Reachable", Style::default().fg(Color::Green))));
                 lines.push(Line::from(vec![Span::styled("Machine     ", dim), Span::raw(format!("{} · NixOS {}", c.hostname.clone().unwrap_or_default(), c.nixos_version.clone().unwrap_or_default()))]));
@@ -1507,7 +1570,7 @@ fn draw_targets(f: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::from(vec![key_span("a"), Span::raw(" add    "), key_span("e"), Span::raw(" edit    "), key_span("d"), Span::raw(" remove    "), key_span("c"), Span::raw(" check reachability, trust, sudo, hardware")]));
     lines.push(Line::from(vec![key_span("t"), Span::raw(" test the SSH connection (job log)    "), key_span("k"), Span::raw(" install this app's SSH key using the target's password once")]));
     lines.push(Line::from(vec![key_span("p"), Span::raw(" pull the target's hardware-configuration.nix into the working copy    "), key_span("s"), Span::raw(" system: generations, roll back, disk, garbage")]));
-    lines.push(Line::from(vec![key_span("K"), Span::raw(" root SSH key on this machine, to use the target as a builder (Build on, in the build form)")]));
+    lines.push(Line::from(vec![key_span("K"), Span::raw(" root SSH key on this machine, to use the target as a builder (Build on, in the build form)    "), key_span("F"), Span::raw(" reset the stored ssh host key (after a warning)")]));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block("Target")), cols[1]);
 }
 
@@ -1563,7 +1626,8 @@ fn draw_job(f: &mut Frame, app: &mut App, area: Rect) {
         let st = if l.text.starts_with("error:") || l.text.contains("] ERROR") { Style::default().fg(Color::Red) } else { st };
         Line::from(Span::styled(l.text.clone(), st))
     }).collect();
-    let b = Block::default().borders(Borders::ALL).title(Span::styled(format!(" {title} "), status_style.add_modifier(Modifier::BOLD))).title_bottom(Line::from(Span::styled(format!(" {}/{} lines{} ", (app.job_scroll + lines.len()).min(total), total, if app.job_follow { " · following" } else { "" }), Style::default().fg(Color::DarkGray))));
+    let hk_hint = if d.info.host_key_failure.is_some() { " ssh refused the host key · F removes the stored key and trusts the current one (after a warning), then run the action again " } else { "" };
+    let b = Block::default().borders(Borders::ALL).title(Span::styled(format!(" {title} "), status_style.add_modifier(Modifier::BOLD))).title_bottom(Line::from(Span::styled(hk_hint, Style::default().fg(Color::Yellow)))).title_bottom(Line::from(Span::styled(format!(" {}/{} lines{} ", (app.job_scroll + lines.len()).min(total), total, if app.job_follow { " · following" } else { "" }), Style::default().fg(Color::DarkGray))));
     f.render_widget(Paragraph::new(lines).block(b), area);
 }
 
@@ -1587,6 +1651,7 @@ fn debug_log(msg: &Msg) {
         Msg::Suggestions(s) => format!("suggestions {}", s.len()),
         Msg::Opened(r) => format!("opened {:?}", r.as_ref().map(|x| x.0.display().to_string())),
         Msg::Check(n, c) => format!("check {n} reachable={}", c.reachable),
+        Msg::HostKeyReset(n, r) => format!("hostkey {n} {:?}", r.as_ref().map(|x| (x.removed, x.learned))),
         Msg::SystemInfo(r) => format!("system {:?}", r.as_ref().map(|i| i.generations.len())),
         Msg::OtherSystems(m, r) => format!("others {m:?} {:?}", r.as_ref().map(|o| o.len())),
         Msg::Job(_) => "job".into(),
@@ -1641,6 +1706,15 @@ fn apply_msg(app: &mut App, msg: Msg, titles: &mut Titles) {
             app.checking.remove(&name);
             app.checks.insert(name, c);
         }
+        Msg::HostKeyReset(name, Ok(r)) => {
+            let fps = if r.fingerprints.is_empty() { String::new() } else { format!(" · {}", r.fingerprints.join(" | ")) };
+            app.status = Some(if r.learned > 0 { format!("{}: removed {} stored entr{}, recorded {} key(s){fps}", r.host, r.removed, if r.removed == 1 { "y" } else { "ies" }, r.learned) } else { format!("{}: removed {} stored entr{}, but no key could be read from the machine (is it up?)", r.host, r.removed, if r.removed == 1 { "y" } else { "ies" }) });
+            app.check_target(&name);
+            if app.screen == Screen::System && app.sys.machine_name().as_deref() == Some(name.as_str()) {
+                app.load_system();
+            }
+        }
+        Msg::HostKeyReset(_, Err(e)) => app.status = Some(format!("host key reset failed: {e}")),
         Msg::SystemInfo(Ok(info)) => {
             if info.machine == app.sys.machine_name() {
                 app.sys.loading = false;
@@ -1703,10 +1777,13 @@ fn apply_msg(app: &mut App, msg: Msg, titles: &mut Titles) {
                             app.refresh_job();
                         }
                     }
-                    JobEvent::Status { status, error, .. } => {
+                    JobEvent::Status { status, error, host_key_failure, .. } => {
                         if let Some(d) = app.job.as_mut() {
                             d.info.status = status;
                             d.info.error = error;
+                            if host_key_failure.is_some() {
+                                d.info.host_key_failure = host_key_failure;
+                            }
                         } else {
                             app.refresh_job();
                         }

@@ -420,6 +420,7 @@ pub async fn run(job: JobHandle, req: DeployRequest) {
             return;
         }
         job.system(format!("Build on {}: the system is evaluated here, compiled on the builder, copied back and activated on this machine.", b.ssh_target)).await;
+        job.set_remote(&b.ssh_target, b.port).await;
     }
     if running_as_root() {
         job.system("Running as root: no sudo password needed.").await;

@@ -5,7 +5,9 @@ import { ApiService, ApiFailure } from '../../api/api.service';
 import { PromptDialogComponent, PromptData, PromptResult } from '../../shared/prompt-dialog.component';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatButtonModule } from '@angular/material/button';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { HostKeyService } from '../../shared/host-key-dialog.component';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { JobsService } from '../../api/jobs.service';
@@ -37,6 +39,10 @@ import type { LogLine } from '../../api/generated';
       }
     </div>
     @if (job()?.info.status === 'running' || job()?.info.status === 'pending') { <mat-progress-bar mode="indeterminate" /> }
+    @if (job()?.info.host_key_failure; as hk) {
+      <div class="error-box"><mat-icon>gpp_maybe</mat-icon><span><b>ssh refused the host key of {{ hk.host }}.</b> The key stored in ~/.ssh/known_hosts is missing or does not match what the machine presented. If you reinstalled that machine this is expected; otherwise someone could be intercepting the connection. You can remove the stored key and trust the current one, then retry.
+        <button mat-stroked-button style="margin-left:8px" (click)="resetHostKey(hk.ssh_target, hk.port)"><mat-icon>key_off</mat-icon> Remove the stored key…</button></span></div>
+    }
     @if (notFound()) {
       <div class="warning-box"><mat-icon>search_off</mat-icon><span>No running or recent job has this id. If the daemon was restarted, the log is still on disk: see "Earlier logs on disk" on the <a routerLink="../" queryParamsHandling="merge">Jobs page</a>.</span></div>
     }
@@ -48,6 +54,26 @@ export class JobLogComponent implements AfterViewInit, OnDestroy {
   private jobs = inject(JobsService);
   private api = inject(ApiService);
   private dialog = inject(MatDialog);
+  private hostKeys = inject(HostKeyService);
+  private router = inject(Router);
+  private snack = inject(MatSnackBar);
+
+  /** Warn, reset the stored host key, then re-run the job when we know how (connection tests). */
+  resetHostKey(ssh_target: string, port: number | null) {
+    const detail = this.job()?.info.error ?? null;
+    this.hostKeys.offer(ssh_target, port, detail).subscribe(r => {
+      if (!r || !r.learned) return;
+      const kind = this.job()?.info.kind;
+      if (kind === 'remote-test') {
+        this.api.remoteTest(ssh_target, port).subscribe({
+          next: j => this.router.navigate(['/w', 'jobs', j.id], { queryParamsHandling: 'merge' }),
+          error: (e: ApiFailure) => this.snack.open(e.message, 'Dismiss', { duration: 6000 }),
+        });
+      } else {
+        this.snack.open(`Stored key of ${r.host} replaced. Run the action again; the new key is accepted now.`, 'OK', { duration: 8000 });
+      }
+    });
+  }
   stopping = signal(false);
   notFound = signal(false);
   firstErrorLine = signal<number | null>(null);
